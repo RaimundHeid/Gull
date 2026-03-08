@@ -1,6 +1,8 @@
 
 #ifdef MACOSX
+#ifndef LINUX
 #define LINUX
+#endif
 #endif
 
 #define W32_BUILD
@@ -50,13 +52,13 @@
 #define F(x) ((x) == 0)
 #define Even(x) F((x) & 1)
 #define Odd(x) T((x) & 1)
-#define Combine(x,y) ((x) | ((y) << 16))
-#define Compose(x,y) ((x) + ((y) << 16))
+#define Combine(x,y) (Convert(x, uint32_t) | (Convert(y, uint32_t) << 16))
+#define Compose(x,y) (Convert(x, uint32_t) + (Convert(y, uint32_t) << 16))
 #define Compose16(x,y) Compose((x)/16,(y)/16)
 #define Compose64(x,y) Compose((x)/64,(y)/64)
 #define Compose256(x,y) Compose((x)/256,(y)/256)
 #define Opening(x) Convert((x) & 0xFFFF,int16_t)
-#define Endgame(x) ((((x) >> 15) & 1) + Convert((x) >> 16,int16_t))
+#define Endgame(x) ((((x) >> 15) & 1) + Convert(Convert(x, uint32_t) >> 16,int16_t))
 
 #define File(x) ((x) & 7)
 #define Rank(x) ((x) >> 3)
@@ -475,7 +477,11 @@ typedef struct {
 
 int RootList[256];
 
+#ifdef __aarch64__
+#define prefetch(a,mode) __builtin_prefetch(a,0,0)
+#else
 #define prefetch(a,mode) _mm_prefetch(a,mode)
+#endif
 
 #define FlagSingleBishop_w (1 << 0)
 #define FlagSingleBishop_b (1 << 1)
@@ -520,12 +526,12 @@ GRef Ref[16 * 64];
     RefM(Current->move).check_ref[1] = RefM(Current->move).check_ref[0]; RefM(Current->move).check_ref[0] = (ref_move); }
 
 uint64_t seed = 1;
-// int MultiPV[256];
+int MultiPV[256];
 // int pvp;
 // int pv_length;
 int LastDepth, LastTime, LastValue, LastExactValue, PrevMove, InstCnt;
 int64_t LastSpeed;
-int PVN, PVHashing = 1, SearchMoves, SMPointer, Previous;
+int PVHashing = 1, SearchMoves, SMPointer, Previous;
 typedef struct {
     int Bad, Change, Singular, Early, FailLow, FailHigh;
 } GSearchInfo;
@@ -575,11 +581,18 @@ const int PieceType[16] = {0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 5};
 #define Ca(x,y) Compose(Av(x,0,0,((y) * 2)),Av(x,0,0,((y) * 2)+1))
 
 #include <stdint.h>
+#ifdef __aarch64__
+inline int popcount(uint64_t x)
+{
+    return __builtin_popcountll(x);
+}
+#else
 #include <popcntintrin.h>
-static inline int popcount(uint64_t x)
+inline int popcount(uint64_t x)
 {
     return _mm_popcnt_u64(x);
 }
+#endif
 
 #include "tbprobe.h"
 
@@ -820,6 +833,7 @@ typedef struct
 typedef struct
 {
     unsigned numThreads;
+    unsigned multiPV;
     unsigned syzygyProbeDepth;
     size_t hashSize;
     unsigned parentPid;
@@ -875,6 +889,7 @@ static const uint32_t Schedule[] =
     0x00878787
 };
 
+#ifndef MACOSX
 extern GThreadInfo INFO[];
 extern GSettings   SETTINGS[];
 extern GSharedInfo SHARED[];
@@ -885,6 +900,15 @@ extern GPVEntry    PVHASH[];
 extern GEntry      HASH[];
 #else
 #define HASH        ((GEntry *)0x8000000)
+#endif
+#else
+#define INFO        ((GThreadInfo *)0x300000000)
+#define SETTINGS    ((GSettings *)0x301000000)
+#define SHARED      ((GSharedInfo *)0x302000000)
+#define DATA        ((GGlobalData *)0x304000000)
+#define PAWNHASH    ((GPawnEntry *)0x310000000)
+#define PVHASH      ((GPVEntry *)0x320000000)
+#define HASH        ((GEntry *)0x340000000)
 #endif
 
 jmp_buf CheckJump;
@@ -946,9 +970,9 @@ void uci();
 void send_position(GPos * Pos);
 void retrieve_position(GPos * Pos, int copy_stack);
 static void nuke_children(void);
-static void create_children(size_t numThreads, size_t syzygyProbeDepth,
+static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProbeDepth,
     size_t hashSize, const char *tbPath);
-static void reset(size_t numThreads, size_t syzygyProbeDepth, size_t hashSize,
+static void reset(size_t numThreads, size_t multiPV, size_t syzygyProbeDepth, size_t hashSize,
     const char *tbPath);
 
 #include "tbprobe.h"
@@ -966,24 +990,26 @@ static void reset(size_t numThreads, size_t syzygyProbeDepth, size_t hashSize,
 #define HASH_SIZE(n)    ((n) == 0? (1 << 20): Bit(msb((size_t)(n) * (1 << 20))))
 
 #ifndef W32_BUILD
+#ifdef __aarch64__
 inline int lsb(uint64_t x) {
-    register unsigned long long y;
+    return __builtin_ctzll(x);
+}
+inline int msb(uint64_t x) {
+    return 63 - __builtin_clzll(x);
+}
+#else
+inline int lsb(uint64_t x) {
+    unsigned long long y;
     __asm__("bsfq %1, %0": "=r"(y): "rm"(x));
     return y;
 }
 
 inline int msb(uint64_t x) {
-    register unsigned long long y;
+    unsigned long long y;
     __asm__("bsrq %1, %0": "=r"(y): "rm"(x));
     return y;
 }
-
-//inline int popcount(uint64_t x) {
-//    x = x - ((x >> 1) & 0x5555555555555555);
-//    x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333);
-//    x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0f;
-//    return (x * 0x0101010101010101) >> 56;
-//}
+#endif
 #else
 inline int lsb(uint64_t x) {
     _asm {
@@ -1108,7 +1134,6 @@ static void go(void)
     }
 
     SHARED->date++;
-    assert(PVN == 1);       // Multi-PV NYI.
     memcpy(&SHARED->rootBoard, Board, sizeof(GBoard));
     memcpy(&SHARED->rootData, Current, sizeof(GData));
     memcpy(&SHARED->rootStack, Stack, sp * sizeof(uint64_t));
@@ -1182,7 +1207,7 @@ static void emergency_stop(void)
         bestMove = THREADS[i]->bestMove;
     // Log this incident:
     log("warning: threads crashed or deadlocked; initiating emergency reset\n");
-    reset(SETTINGS->numThreads, SETTINGS->syzygyProbeDepth, SETTINGS->hashSize, 
+    reset(SETTINGS->numThreads, SETTINGS->multiPV, SETTINGS->syzygyProbeDepth, SETTINGS->hashSize, 
         SyzygyPath);
     if (go)
     {
@@ -1226,7 +1251,6 @@ void init_search(int clear_hash) {
     get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     LastTime = LastValue = LastExactValue = InstCnt = 0;
     LastSpeed = 0;
-    PVN = 1;
     SearchMoves = 0;
     LastDepth = 128;
     memset(CurrentSI,0,sizeof(GSearchInfo));
@@ -1442,12 +1466,22 @@ void pick_pv(unsigned pvPtr, unsigned pvLen)
     }
     evaluate();
     if (Current->att[Current->turn] & King(Current->turn ^ 1))
-        INFO->PV[pvPtr] = 0;
-    else if (move && (Current->turn ? is_legal<1>(move) : is_legal<0>(move)))
     {
+        INFO->PV[pvPtr] = 0;
+        return;
+    }
+    if (move && (Current->turn ? is_legal<1>(move) : is_legal<0>(move)))
+    {
+        if (Current->turn) do_move<1>(move); else do_move<0>(move);
+        evaluate();
+        if (Current->att[Current->turn] & King(Current->turn ^ 1))
+        {
+            if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
+            INFO->PV[pvPtr] = 0;
+            return;
+        }
         INFO->PV[pvPtr] = move;
         pvPtr++;
-        if (Current->turn) do_move<1>(move); else do_move<0>(move);
         if (Current->ply >= 100) goto finish;
         for (i = 4; i <= Current->ply; i+= 2)
         {
@@ -2751,7 +2785,7 @@ void hash_exact(int move, int value, int depth, int exclusion, int ex_depth, int
 }
 
 template <bool pv> inline int extension(int move, int depth) {
-    register int ext = 0;
+    int ext = 0;
     if (pv) {
         if (T(Current->passer & Bit(From(move))) && CRank(Current->turn, From(move)) >= 5 && depth < 16) ext = 2;
     } else {
@@ -2783,7 +2817,7 @@ void sort_moves(int * start, int * finish) {
 }
 
 inline int pick_move() {
-    register int move, *p, *best;
+    int move, *p, *best;
     move = *(Current->current);
     if (F(move)) return 0;
     best = Current->current;
@@ -3203,7 +3237,7 @@ template <bool me> int * gen_evasions(int * list) {
 
 void mark_evasions(int * list) {
     for (; T(*list); list++) {
-        register int move = (*list) & 0xFFFF;
+        int move = (*list) & 0xFFFF;
         if (F(Square(To(move))) && F(move & 0xE000)) {
             if (move == Current->ref[0]) *list |= RefOneScore;
             else if (move == Current->ref[1]) *list |= RefTwoScore;
@@ -4316,21 +4350,17 @@ cut:
 }
 
 template <bool me> int multipv(int depth) {
-    fprintf(stderr, "NYI...\n");
-    abort();
-#if 0
     int move, low = MateValue, value, i, cnt, ext, new_depth = depth;
-    fprintf(stdout,"info depth %d\n",(depth/2)); fflush(stdout);
+    unsigned PVN = SETTINGS->multiPV;
+
     for (cnt = 0; cnt < PVN && T(move = (MultiPV[cnt] & 0xFFFF)); cnt++) {
         MultiPV[cnt] = move;
-        move_to_string(move,score_string);
-        if (T(Print)) sprintf(info_string,"info currmove %s currmovenumber %d\n",score_string,cnt + 1);
         new_depth = depth - 2 + (ext = extension<1>(move, depth));
-        do_move<me>(move);
+        if (me) do_move<1>(move); else do_move<0>(move);
         value = -pv_search<opp, 0>(-MateValue,MateValue,new_depth,ExtFlag(ext));
         MultiPV[cnt] |= value << 16;
         if (value < low) low = value;
-        undo_move<me>(move);
+        if (me) undo_move<1>(move); else undo_move<0>(move);
         for (i = cnt - 1; i >= 0; i--) {
             if ((MultiPV[i] >> 16) < value) {
                 MultiPV[i + 1] = MultiPV[i];
@@ -4343,14 +4373,12 @@ template <bool me> int multipv(int depth) {
     }
     for (;T(move = (MultiPV[cnt] & 0xFFFF)); cnt++) {
         MultiPV[cnt] = move;
-        move_to_string(move,score_string);
-        if (T(Print)) sprintf(info_string,"info currmove %s currmovenumber %d\n",score_string,cnt + 1);
         new_depth = depth - 2 + (ext = extension<1>(move, depth));
-        do_move<me>(move);
+        if (me) do_move<1>(move); else do_move<0>(move);
         value = -search<opp, 0>(-low, new_depth, FlagNeatSearch | ExtFlag(ext));
         if (value > low) value = -pv_search<opp, 0>(-MateValue,-low,new_depth,ExtFlag(ext));
         MultiPV[cnt] |= value << 16;
-        undo_move<me>(move);
+        if (me) undo_move<1>(move); else undo_move<0>(move);
         if (value > low) {
             for (i = cnt; i >= PVN; i--) MultiPV[i] = MultiPV[i - 1];
             MultiPV[PVN - 1] = move | (value << 16);
@@ -4367,76 +4395,69 @@ template <bool me> int multipv(int depth) {
         }
     }
     return Current->score;
-#endif
 }
 
 void send_multipv(int depth, int curr_number) {
-    fprintf(stderr, "NYI...\n");
-    abort();
-#if 0
-    int i, j, pos, move, score;
-    int64_t nps, snodes, tbhits = 0;
-    if (F(Print)) return;
-    for (j = 0; j < PVN && T(MultiPV[j]); j++) {
-        pv_length = 63;
-        pvp = 0;
-        move = MultiPV[j] & 0xFFFF;
-        score = MultiPV[j] >> 16;
-        memset(PV,0,64 * sizeof(uint16_t));
-        if (Current->turn) do_move<1>(move);
-        else do_move<0>(move);
-        pick_pv();
-        if (Current->turn ^ 1) undo_move<1>(move);
-        else undo_move<0>(move);
-        for (i = 63; i > 0; i--) PV[i] = PV[i - 1];
-        PV[0] = move;
-        pos = 0;
-        for (i = 0; i < 64 && T(PV[i]); i++) {
-            if (pos > 0) { 
-                pv_string[pos] = ' '; 
-                pos++; 
+    if (INFO->id != 0) return;
+
+    unsigned PVN = SETTINGS->multiPV;
+    for (unsigned j = 0; j < PVN && T(MultiPV[j]); j++) {
+        int move = MultiPV[j] & 0xFFFF;
+        int score = MultiPV[j] >> 16;
+        int localPV[64];
+
+        mutex_lock(&SHARED->mutex);
+        INFO->PV[0] = move;
+        if (Current->turn) do_move<1>(move); else do_move<0>(move);
+        pick_pv(1, 64);
+        if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
+        for (int i = 0; i < 64; i++) localPV[i] = INFO->PV[i];
+        mutex_unlock(&SHARED->mutex);
+
+        const char *scoreType = "mate";
+        int scoreVal = score;
+        if (scoreVal > EvalValue)
+            scoreVal = (MateValue - scoreVal + 1) / 2;
+        else if (scoreVal < -EvalValue)
+            scoreVal = -(scoreVal + MateValue + 1) / 2;
+        else
+            scoreType = "cp";
+
+        uint64_t currTime = get_time();
+        uint64_t elapsedTime = currTime - SHARED->startTime;
+        if (elapsedTime == 0) elapsedTime = 1;
+
+        size_t nodes = 0, tbHits = 0;
+        for (unsigned i = 0; i < SETTINGS->numThreads; i++) {
+            nodes  += THREADS[i]->nodes;
+            tbHits += THREADS[i]->tbHits;
+        }
+        size_t nps = (nodes * 1000) / elapsedTime;
+
+        char pvStr[IOSIZE];
+        unsigned pvPos = 0;
+        for (unsigned i = 0; i < 64 && localPV[i] != 0; i++) {
+            if (pvPos >= sizeof(pvStr) - 32) break;
+            int mv = localPV[i];
+            pvStr[pvPos++] = ' ';
+            pvStr[pvPos++] = ((mv >> 6) & 7) + 'a';
+            pvStr[pvPos++] = ((mv >> 9) & 7) + '1';
+            pvStr[pvPos++] = (mv & 7) + 'a';
+            pvStr[pvPos++] = ((mv >> 3) & 7) + '1';
+            if (IsPromotion(mv)) {
+                if ((mv & 0xF000) == FlagPQueen) pvStr[pvPos++] = 'q';
+                else if ((mv & 0xF000) == FlagPRook) pvStr[pvPos++] = 'r';
+                else if ((mv & 0xF000) == FlagPLight || (mv & 0xF000) == FlagPDark) pvStr[pvPos++] = 'b';
+                else if ((mv & 0xF000) == FlagPKnight) pvStr[pvPos++] = 'n';
             }
-            move = PV[i];
-            pv_string[pos++] = ((move >> 6) & 7) + 'a';
-            pv_string[pos++] = ((move >> 9) & 7) + '1';
-            pv_string[pos++] = (move & 7) + 'a';
-            pv_string[pos++] = ((move >> 3) & 7) + '1';
-            if (IsPromotion(move)) {
-                if ((move & 0xF000) == FlagPQueen)  pv_string[pos++] = 'q';
-                else if ((move & 0xF000) == FlagPRook)   pv_string[pos++] = 'r';
-                else if ((move & 0xF000) == FlagPLight || (move & 0xF000) == FlagPDark) pv_string[pos++] = 'b';
-                else if ((move & 0xF000) == FlagPKnight) pv_string[pos++] = 'n';
-            }
-            pv_string[pos] = 0;
         }
-        score_string[0] = 'c';
-        score_string[1] = 'p';
-        if (score > EvalValue) {
-            strcpy(score_string,"mate ");
-            score = (MateValue - score + 1)/2;
-            score_string[6] = 0;
-        } else if (score < -EvalValue) {
-            strcpy(score_string,"mate ");
-            score = -(score + MateValue + 1)/2;
-            score_string[6] = 0;
-        } else {
-            score_string[0] = 'c';
-            score_string[1] = 'p';
-            score_string[2] = ' ';
-            score_string[3] = 0;
-        }
-        nps = get_time() - StartTime;
-        snodes = 0;
-        for (int i = 0; i < SETTINGS->numThreads; i++)
-        {
-            snodes += THREADS[i]->nodes;
-            tbhits += THREADS[i]->tbHits;
-        }
-        if (nps) nps = (snodes * 1000)/nps; 
-        fprintf(stdout,"info multipv %d depth %d score %s%d nodes %lld nps %lld tbhits %lld pv %s\n",j + 1,(j <= curr_number ? depth : depth - 1),score_string,score,snodes,nps,tbhits,pv_string);
-        fflush(stdout);
+        pvStr[pvPos] = '\0';
+
+        char line[IOSIZE];
+        int len = snprintf(line, sizeof(line)-1, "info multipv %u depth %d score %s %d nodes %" SIZE_T " nps %" SIZE_T " tbhits %" SIZE_T " time %llu pv%s\n",
+            j + 1, (j <= (unsigned)curr_number ? depth : depth - 1), scoreType, scoreVal, nodes, nps, tbHits, (unsigned long long)elapsedTime, pvStr);
+        if (len > 0 && len < (int)sizeof(line)-1) put_line(line, len);
     }
-#endif
 }
 
 int time_to_stop(GSearchInfo * SI, int time, int searching) {
@@ -4505,11 +4526,9 @@ template <bool me> void root(void)
 
     evaluate();
     gen_root_moves<me>();
-    if (PVN > 1) {
-//        memset(MultiPV,0,128 * sizeof(int));
-//        for (i = 0; MultiPV[i] = RootList[i]; i++);
-        fprintf(stderr, "NYI...\n");
-        abort();
+    if (SETTINGS->multiPV > 1) {
+        memset(MultiPV,0,256 * sizeof(int));
+        for (i = 0; RootList[i]; i++) MultiPV[i] = RootList[i];
     }
     INFO->bestMove = RootList[0];
     if (F(INFO->bestMove))
@@ -4546,7 +4565,7 @@ template <bool me> void root(void)
             knodes = PVEntry->knodes;
         }
     }
-    if (T(hash_depth) && PVN == 1)
+    if (T(hash_depth) && SETTINGS->multiPV == 1)
     {
         Previous = INFO->bestScore = hash_value;
         depth = hash_depth;
@@ -4649,7 +4668,7 @@ set_jump:
         CurrentSI->Early = 1;
         CurrentSI->Change = CurrentSI->FailHigh = CurrentSI->FailLow =
             CurrentSI->Singular = 0;
-        if (PVN > 1)
+        if (SETTINGS->multiPV > 1)
             value = multipv<me>(depth);
         else if ((depth/2) < 7 || F(Aspiration))
             LastValue = LastExactValue = value =
@@ -4742,6 +4761,7 @@ stop:
 
 void send_pv(int depth, int alpha, int beta, int score)
 {
+    if (SETTINGS->multiPV > 1) return;
     int sel_depth;
     for (sel_depth = 1; sel_depth < 127 && T((Data + sel_depth)->att[0]);
         sel_depth++);
@@ -4749,11 +4769,25 @@ void send_pv(int depth, int alpha, int beta, int score)
     int move = (INFO->bestMove == 0? RootList[0]: INFO->bestMove);
     mutex_lock(&SHARED->mutex);
     INFO->selDepth = sel_depth;
-    INFO->PV[0] = move;
-    if (Current->turn) do_move<1>(move); else do_move<0>(move);
-    unsigned pvPtr = 1, pvLen = 64;
-    pick_pv(pvPtr, pvLen);
-    if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
+    if (move && (Current->turn ? is_legal<1>(move) : is_legal<0>(move)))
+    {
+        if (Current->turn) do_move<1>(move); else do_move<0>(move);
+        evaluate();
+        if (Current->att[Current->turn] & King(Current->turn ^ 1))
+        {
+            if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
+            INFO->PV[0] = 0;
+        }
+        else
+        {
+            INFO->PV[0] = move;
+            unsigned pvPtr = 1, pvLen = 64;
+            pick_pv(pvPtr, pvLen);
+            if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
+        }
+    }
+    else
+        INFO->PV[0] = 0;
     mutex_unlock(&SHARED->mutex);
     if (INFO->id != 0)
         return;
@@ -4816,9 +4850,9 @@ static void send_pv(const int *PV, size_t nodes, size_t tbHits, int depth,
     char line[IOSIZE];
     int len = snprintf(line, sizeof(line)-1, "info depth %d seldepth %d score "
         "%s %d nodes %" SIZE_T " nps %" SIZE_T " tbhits %" SIZE_T
-        " time %ld pv%s\n",
+        " time %llu pv%s\n",
         depth/2, selDepth/2, scoreType, bestScore, nodes, nps, tbHits,
-        currTime - startTime, pvStr);
+        (unsigned long long)(currTime - startTime), pvStr);
     if (len < 0 || len >= sizeof(line)-1)
         return; 
     put_line(line, len);
@@ -4877,8 +4911,8 @@ static void send_best_move(const int *PV, size_t nodes, size_t tbHits,
     uint64_t time = stopTime - startTime;
     uint64_t nps = (nodes / Max(time / 1000, 1));
     int len = snprintf(line, sizeof(line)-1, "info nodes %" SIZE_T
-        " tbhits %" SIZE_T " time %ld nps %ld score %s %d\n", nodes, tbHits,
-        time, nps, scoreType, bestScore);
+        " tbhits %" SIZE_T " time %llu nps %llu score %s %d\n", nodes, tbHits,
+        (unsigned long long)time, (unsigned long long)nps, scoreType, bestScore);
     if (len > 0 && len < sizeof(line)-1)
         put_line(line, len);
 
@@ -5084,6 +5118,7 @@ void uci(void)
             if (token == NULL)
                 goto bad_command;
             unsigned numThreads = SETTINGS->numThreads;
+            unsigned multiPV = SETTINGS->multiPV;
             unsigned syzygyProbeDepth = SETTINGS->syzygyProbeDepth;
             size_t hashSize = SETTINGS->hashSize;
             int64_t n = 0;
@@ -5094,6 +5129,8 @@ void uci(void)
             }
             else if (strcmp(name, "Threads") == 0)
                 numThreads = get_number(strtok_r(NULL, " ", &saveptr));
+            else if (strcmp(name, "MultiPV") == 0)
+                multiPV = get_number(strtok_r(NULL, " ", &saveptr));
             else if (strcmp(name, "SyzygyPath") == 0)
             {
                 if (saveptr != NULL && strlen(saveptr) < sizeof(SyzygyPath)-1)
@@ -5103,7 +5140,7 @@ void uci(void)
                 syzygyProbeDepth = get_number(strtok_r(NULL, " ", &saveptr));
             else
                 goto bad_command;
-            reset(numThreads, syzygyProbeDepth, hashSize, SyzygyPath);
+            reset(numThreads, multiPV, syzygyProbeDepth, hashSize, SyzygyPath);
             mutex_lock(&SHARED->mutex);
         }
         else if (strcmp(token, "ucinewgame") == 0)
@@ -5121,8 +5158,8 @@ void uci(void)
                 "id author ThinkingALot\n"
                 "option name Hash type spin min 1 max 8388608 default 128\n"
                 "option name Threads type spin min 1 max 64 default 4\n"
-                "option name SyzygyPath type string default <empty>\n"
-                "option name SyzygyProbeDepth type spin min 0 max 64 "
+                "option name MultiPV type spin min 1 max 64 default 1\n"
+                "option name SyzygyPath type string default <empty>\n"                "option name SyzygyProbeDepth type spin min 0 max 64 "
                     "default 1\n"
                 "uciok\n";
             put_line(reply, sizeof(reply)-1);
@@ -5254,8 +5291,8 @@ int main(int argc, char **argv)
             nodes += INFO->nodes;
         }
         uint64_t t1 = get_time();
-        printf("TIME : %ldms\n", t1 - t0);
-        printf("NODES: %lu\n", nodes);
+        printf("TIME : %llums\n", (unsigned long long)(t1 - t0));
+        printf("NODES: %llu\n", (unsigned long long)nodes);
         exit(EXIT_SUCCESS);
     }
     else if (argc > 1)
@@ -5280,9 +5317,11 @@ int main(int argc, char **argv)
     if ((val = getenv("LAZYGULL_SYZYGY_PROBE_DEPTH")) != NULL)
         syzygyProbeDepth = atoi(val);
 
-    PVN = 1;        // XXX NYI
+    unsigned multiPV = 1;
+    if ((val = getenv("LAZYGULL_MULTIPV")) != NULL)
+        multiPV = atoi(val);
 
-    create_children(numThreads, syzygyProbeDepth, hashSize, SyzygyPath);
+    create_children(numThreads, multiPV, syzygyProbeDepth, hashSize, SyzygyPath);
     init_search(false);
 
     while (true)
@@ -5293,20 +5332,22 @@ int main(int argc, char **argv)
 /*
  * Create the child processes.
  */
-static void create_children(size_t numThreads, size_t syzygyProbeDepth,
+static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProbeDepth,
     size_t hashSize, const char *tbPath)
 {
     const size_t maxHashSize = 8 * ((size_t)1 << 40);   // 8TB
     const size_t maxNumThreads = 256;
     const size_t maxSyzygyProbeDepth = 64;
+    const size_t maxMultiPV = 64;
     hashSize = Min(maxHashSize, hashSize);
     numThreads = Min(maxNumThreads, numThreads);
     syzygyProbeDepth = Min(maxSyzygyProbeDepth, syzygyProbeDepth);
+    multiPV = Min(maxMultiPV, multiPV);
     unsigned pid = get_pid();
 
-    log("settings: numThreads=%" SIZE_T ", hashSize=%" SIZE_T ", "
+    log("settings: numThreads=%" SIZE_T ", multiPV=%" SIZE_T ", hashSize=%" SIZE_T ", "
             "syzygyProbeDepth=%" SIZE_T ", syzygyPath=\"%s\"\n",
-            numThreads, hashSize, syzygyProbeDepth, tbPath);
+            numThreads, multiPV, hashSize, syzygyProbeDepth, tbPath);
 
     // Create shared objects:
     char dataName[256] = {0};
@@ -5318,6 +5359,7 @@ static void create_children(size_t numThreads, size_t syzygyProbeDepth,
     init_object_name(settingsName, sizeof(settingsName)-1, "SETTINGS", pid, 0);
     GSettings settings;
     settings.numThreads = numThreads;
+    settings.multiPV = multiPV;
     settings.syzygyProbeDepth = syzygyProbeDepth;
     settings.hashSize = hashSize;
     settings.parentPid = pid;
@@ -5432,10 +5474,10 @@ static void nuke_children(void)
 /*
  * Reset (e.g. change of parameters).
  */
-static void reset(size_t numThreads, size_t syzygyProbeDepth, size_t hashSize,
+static void reset(size_t numThreads, size_t multiPV, size_t syzygyProbeDepth, size_t hashSize,
     const char *tbPath)
 {
     nuke_children();
-    create_children(numThreads, syzygyProbeDepth, hashSize, tbPath);
+    create_children(numThreads, multiPV, syzygyProbeDepth, hashSize, tbPath);
 }
 

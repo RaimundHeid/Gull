@@ -50,6 +50,11 @@
 /* ENGINE INTEGRATION CONFIG                                               */
 /***************************************************************************/
 
+#ifdef __aarch64__
+#define TB_CUSTOM_POP_COUNT(x) __builtin_popcountll(x)
+#define TB_CUSTOM_LSB(x) __builtin_ctzll(x)
+#endif
+
 #ifdef LINUX
 #include "Linux.h"
 #endif
@@ -60,7 +65,11 @@
 
 #include "data.h"
 
+#ifndef MACOSX
 extern GGlobalData DATA[];
+#else
+#define DATA ((GGlobalData *)0x304000000)
+#endif
 
 /*
  * If you are integrating tbprobe into an engine, you can replace some of

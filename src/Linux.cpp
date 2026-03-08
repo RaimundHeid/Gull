@@ -34,30 +34,44 @@
 #include <string.h>
 #include <time.h>
 
+#ifndef __aarch64__
 #include <xmmintrin.h>
 #include <popcntintrin.h>
 #include <x86intrin.h>
+#endif
 
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
+#ifndef UINT64_MAX
 #define UINT64_MAX  0xFFFFFFFFFFFFFFFFull       // XXX
+#endif
+#ifndef UINT32_MAX
 #define UINT32_MAX  0xFFFFFFFF
+#endif
+#ifndef UINT8_MAX
 #define UINT8_MAX   0xFF
+#endif
 
 #ifdef MACOSX   // MacOSX:
 #include <mach/mach_time.h>
+#include <mach-o/dyld.h>
 #define MAP_ANONYMOUS   MAP_ANON
 #else           // Linux:
 #include <sys/prctl.h>
 #endif 
 
+#ifndef __aarch64__
 #define builtin_cpuid(f, ax, bx, cx, dx)    \
     __asm__ __volatile__ ("cpuid" : "=a" (ax), "=b" (bx), "=c" (cx), \
         "=d" (dx) : "a" (f))
+#endif
 
+#ifdef PAGE_SIZE
+#undef PAGE_SIZE
+#endif
 #define PAGE_SIZE       4096
 #define SIZE(size)      ((((size)-1) / PAGE_SIZE) * PAGE_SIZE + PAGE_SIZE)
 
@@ -177,10 +191,16 @@ void create_child(const char *hashName, const char *pvHashName,
     prctl(PR_SET_PDEATHSIG, SIGHUP);
 #endif
     char exe[PATH_MAX];
+#ifndef MACOSX
     ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe)-1);
     if (len < 0)
         error("failed to read link: %s", strerror(errno));
     exe[len] = '\0';
+#else
+    uint32_t size = sizeof(exe);
+    if (_NSGetExecutablePath(exe, &size) != 0)
+        error("failed to get executable path");
+#endif
     execl(exe, "Gull", "child", hashName, pvHashName, pawnHashName,
         dataName, settingsName, sharedName, infoName, tbPath, NULL);
     error("failed to exec: %s", strerror(errno));
@@ -234,7 +254,14 @@ int64_t get_time()
     return tick;
 #else
     // MacOSX:
-    return (int64_t)mach_absolute_time() / 1000000;
+    static mach_timebase_info_data_t info;
+    static bool init = false;
+    if (!init)
+    {
+        mach_timebase_info(&info);
+        init = true;
+    }
+    return (int64_t)((mach_absolute_time() * info.numer / info.denom) / 1000000);
 #endif
 }
 
@@ -257,7 +284,9 @@ static void cond_init(GCondVar *condVar)
     pthread_condattr_t attrs;
     pthread_condattr_init(&attrs);
     pthread_condattr_setpshared(&attrs, PTHREAD_PROCESS_SHARED);
+#ifndef MACOSX
     pthread_condattr_setclock(&attrs, CLOCK_MONOTONIC);
+#endif
     pthread_cond_init(condVar, &attrs);
 }
 
@@ -270,6 +299,7 @@ static void mutex_lock(GMutex *mutex)
 
 static bool mutex_lock(GMutex *mutex, uint64_t timeout)
 {
+#ifndef MACOSX
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
     {
@@ -280,6 +310,11 @@ static bool mutex_lock(GMutex *mutex, uint64_t timeout)
     ts.tv_nsec += timeout * 1000000;
     int r = pthread_mutex_timedlock(mutex, &ts);
     return (r == ETIMEDOUT);
+#else
+    // MacOS doesn't support timedlock.
+    mutex_lock(mutex);
+    return false;
+#endif
 }
 
 static void mutex_free(GMutex *mutex)
@@ -335,8 +370,10 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
         }
 
         struct timeval tv;
-        tv.tv_sec  = timeout / 1000;
-        tv.tv_usec = (timeout % 1000) * 1000;
+        uint64_t cap_timeout = timeout;
+        if (cap_timeout > 1000000000ull) cap_timeout = 1000000000ull;
+        tv.tv_sec  = cap_timeout / 1000;
+        tv.tv_usec = (cap_timeout % 1000) * 1000;
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(STDIN_FILENO, &fds);
@@ -393,8 +430,15 @@ static void put_line(char *line, unsigned linelen)
 static void init_os(void)
 {
     int fds[2];
+#ifndef MACOSX
     if (pipe2(fds, O_CLOEXEC) != 0)
         return;
+#else
+    if (pipe(fds) != 0)
+        return;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+#endif
     pid_t pid = getpid();
     if (fork() == 0)
     {
@@ -405,7 +449,7 @@ static void init_os(void)
         char c;
         int r = read(fds[0], &c, sizeof(c));
         kill(-pid, SIGKILL);
-        error("failed to kill children: %s", strerror(errno));
+        _exit(0);
     }
     close(fds[0]);
 }

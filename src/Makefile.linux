@@ -1,15 +1,15 @@
 ifeq ($(COMP),)
-    CC=g++
+    CC=clang++
 else
 	CC=$(COMP)
 endif
 
 ifeq ($(ARCH),)
-	ARCH=x86-64
+	ARCH=arm64
 endif
 
 DATE=$(shell date +%y%m%d)
-CFLAGS=-fno-exceptions -fno-rtti -fno-stack-protector -Wno-parentheses -pthread 
+CFLAGS=-fno-exceptions -fno-rtti -fno-stack-protector -Wno-parentheses -Wno-deprecated -Wno-deprecated-declarations -pthread 
 ifeq ($(ARCH),x86-64)
     CFLAGS += -msse4.1 -mpopcnt -D GULL_MAGIC_BITBOARDS
     VERSION = $(DATE)-Linux-x86_64
@@ -19,7 +19,25 @@ ifeq ($(ARCH),x86-64-bmi2)
     CFLAGS += -msse4.2 -mpopcnt -mavx2 -mbmi -mbmi2 -D GULL_PDEP_BITBOARDS
     VERSION = $(DATE)-Linux-x86_64-bmi2
 endif
+
+ifeq ($(ARCH),arm64)
+    CFLAGS += -D MACOSX -D GULL_MAGIC_BITBOARDS
+    VERSION = $(DATE)-MacOS-arm64
+    PROF_GEN = -fprofile-instr-generate
+    PROF_USE = -fprofile-instr-use=default.profdata
+    PROF_MERGE = xcrun llvm-profdata merge -output=default.profdata *.profraw
+    NO_PEEL =
+else
+    PROF_GEN = -fprofile-generate
+    PROF_USE = -fprofile-use
+    PROF_MERGE = true
+    NO_PEEL = -fno-peel-loops -fno-tracer
+endif
+
 CFLAGS += -DVERSION=$(VERSION)
+ifeq ($(ARCH),arm64)
+    LDFLAGS=
+else
 LDFLAGS=-lrt \
     -Wl,--defsym=INFO=0x300000 \
     -Wl,--defsym=SETTINGS=0x301000 \
@@ -28,6 +46,7 @@ LDFLAGS=-lrt \
     -Wl,--defsym=PAWNHASH=0x78000000 \
     -Wl,--defsym=PVHASH=0x7B000000 \
     -Wl,--defsym=HASH=0x7F000000
+endif
 STRIP=strip
 
 help:
@@ -62,30 +81,39 @@ help:
 	@echo
 
 build: tb
-	$(CC) $(CFLAGS) -O3 -D LINUX Gull.cpp tbprobe.c $(LDFLAGS) -o LazyGull
+	$(CC) $(CFLAGS) -O3 -D LINUX -c Gull.cpp -o Gull.o
+	$(CC) $(CFLAGS) -O3 -D LINUX -x c++ -c tbprobe.c -o tbprobe.o
+	$(CC) $(CFLAGS) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull
 	$(STRIP) LazyGull
 
 pgo-build: tb
-	rm -f *.gcda
-	$(CC) $(CFLAGS) -O3 -fprofile-generate -D LINUX Gull.cpp tbprobe.c \
-        $(LDFLAGS) -o LazyGull
-	./bench.sh ./LazyGull 11
-	$(CC) $(CFLAGS) -O3 -fprofile-use -fno-peel-loops -fno-tracer -D LINUX \
-        Gull.cpp tbprobe.c $(LDFLAGS) -o LazyGull
+	rm -f *.gcda *.profraw *.profdata
+	$(CC) $(CFLAGS) -O3 $(PROF_GEN) -D LINUX -c Gull.cpp -o Gull.o
+	$(CC) $(CFLAGS) -O3 $(PROF_GEN) -D LINUX -x c++ -c tbprobe.c -o tbprobe.o
+	$(CC) $(CFLAGS) $(PROF_GEN) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull
+	LLVM_PROFILE_FILE="code-%p.profraw" ./bench.sh ./LazyGull 11
+	$(PROF_MERGE)
+	$(CC) $(CFLAGS) -O3 $(PROF_USE) $(NO_PEEL) -D LINUX -c Gull.cpp -o Gull.o
+	$(CC) $(CFLAGS) -O3 $(PROF_USE) $(NO_PEEL) -D LINUX -x c++ -c tbprobe.c -o tbprobe.o
+	$(CC) $(CFLAGS) $(PROF_USE) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull
 	$(STRIP) LazyGull
 
 debug: tb
-	$(CC) $(CFLAGS) -O0 -g -D LINUX Gull.cpp tbprobe.c $(LDFLAGS) -o LazyGull
+	$(CC) $(CFLAGS) -O0 -g -D LINUX -c Gull.cpp -o Gull.o
+	$(CC) $(CFLAGS) -O0 -g -D LINUX -x c++ -c tbprobe.c -o tbprobe.o
+	$(CC) $(CFLAGS) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull
 
 tb: Fathom-master.zip
-	unzip -o -j Fathom-master.zip "Fathom-master/src/tbprobe.h" -d "./"
-	unzip -o -j Fathom-master.zip "Fathom-master/src/tbprobe.c" -d "./"
-	unzip -o -j Fathom-master.zip "Fathom-master/src/tbcore.h" -d "./"
-	unzip -o -j Fathom-master.zip "Fathom-master/src/tbcore.c" -d "./"
+	@if [ ! -f tbprobe.c ]; then \
+		unzip -o -j Fathom-master.zip "Fathom-master/src/tbprobe.h" -d "./"; \
+		unzip -o -j Fathom-master.zip "Fathom-master/src/tbprobe.c" -d "./"; \
+		unzip -o -j Fathom-master.zip "Fathom-master/src/tbcore.h" -d "./"; \
+		unzip -o -j Fathom-master.zip "Fathom-master/src/tbcore.c" -d "./"; \
+	fi
 
 Fathom-master.zip:
-	wget https://github.com/basil00/Fathom/archive/master.zip \
-        -O Fathom-master.zip
+	curl -L https://github.com/basil00/Fathom/archive/master.zip \
+        -o Fathom-master.zip
 
 clean:
 	rm -f LazyGull tbprobe.o
