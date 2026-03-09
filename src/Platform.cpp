@@ -66,7 +66,7 @@
 static void log(const char *format, ...)
 {
     FILE *stream = fopen("lazygull.log", "a");
-    if (stream == NULL)
+    if (stream == nullptr)
         return;
     va_list ap;
     va_start(ap, format);
@@ -121,11 +121,11 @@ void *init_object(const char *object, size_t size, void *addr,
 #ifdef WINDOWS
     size_t size2 = SIZE(size);
     HANDLE handle = INVALID_HANDLE_VALUE;
-    if (object != NULL)
+    if (object != nullptr)
     {
         if (create)
         {
-            handle = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, 
+            handle = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, 
                 PAGE_READWRITE, (DWORD)(size2 >> 32),
                 (DWORD)(size2 & 0xFFFFFFFF), object);
             for (unsigned i = 0;
@@ -144,22 +144,22 @@ void *init_object(const char *object, size_t size, void *addr,
             handle = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, object);
     }
     else
-        handle = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-            (DWORD)(size2 >> 32), (DWORD)(size2 & 0xFFFFFFFF), NULL);
-    if ((handle == INVALID_HANDLE_VALUE || handle == NULL) &&
+        handle = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+            (DWORD)(size2 >> 32), (DWORD)(size2 & 0xFFFFFFFF), nullptr);
+    if ((handle == INVALID_HANDLE_VALUE || handle == nullptr) &&
             (create || GetLastError() != ERROR_ALREADY_EXISTS))
         error("failed to open file mapping \"%s\" (%d)", object,
             GetLastError());
-    void *ptr = NULL;
+    void *ptr = nullptr;
     if (map)
     {
         DWORD access = FILE_MAP_READ |
-            (readonly && value == NULL? 0: FILE_MAP_WRITE);
+            (readonly && value == nullptr? 0: FILE_MAP_WRITE);
         ptr = MapViewOfFileEx(handle, access, 0, 0, size2, addr);
-        if (ptr == NULL)
+        if (ptr == nullptr)
             error("failed to map file mapping \"%s\" (%d)", object,
                 GetLastError());
-        if (value != NULL)
+        if (value != nullptr)
         {
             memcpy(ptr, value, size);
             DWORD old_prot;
@@ -169,13 +169,13 @@ void *init_object(const char *object, size_t size, void *addr,
                     GetLastError());
         }
     }
-    if (!create || object == NULL)
+    if (!create || object == nullptr)
         CloseHandle(handle);
     return ptr;
 #else
     int fd = -1;
     int flags = 0;
-    if (object != NULL)
+    if (object != nullptr)
     {
         if (create)
             fd = shm_open(object, O_RDWR | O_CREAT | O_CLOEXEC,
@@ -192,12 +192,12 @@ void *init_object(const char *object, size_t size, void *addr,
         flags |= MAP_PRIVATE | MAP_ANONYMOUS;
     if (map)
     {
-        int prot = PROT_READ | (readonly && value == NULL? 0: PROT_WRITE);
-        flags |= (addr == NULL? 0: MAP_FIXED);
+        int prot = PROT_READ | (readonly && value == nullptr? 0: PROT_WRITE);
+        flags |= (addr == nullptr? 0: MAP_FIXED);
         void *ptr = mmap(addr, SIZE(size), prot, flags, fd, 0);
-        if (ptr == MAP_FAILED || (addr != NULL && ptr != addr))
+        if (ptr == MAP_FAILED || (addr != nullptr && ptr != addr))
             error("failed to map object %s: %s", object, strerror(errno));
-        if (value != NULL)
+        if (value != nullptr)
         {
             memcpy(ptr, value, size);
             if (readonly && mprotect(ptr, SIZE(size), PROT_READ) != 0)
@@ -210,7 +210,7 @@ void *init_object(const char *object, size_t size, void *addr,
     }
     if (fd > 0)
         close(fd);
-    return NULL;
+    return nullptr;
 #endif
 }
 
@@ -226,7 +226,7 @@ void remove_object(const char *object)
         {
             handleInfo[i].name[0] = '\0';
             CloseHandle(handleInfo[i].handle);
-            handleInfo[i].handle = NULL;
+            handleInfo[i].handle = nullptr;
             return;
         }
     }
@@ -273,7 +273,7 @@ void create_child(const char *hashName, const char *pvHashName,
     startInfo.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE); 
     startInfo.hStdInput = INVALID_HANDLE_VALUE;
   
-    if (GetModuleFileName(NULL, name, sizeof(name)-1) >= sizeof(name)-1)
+    if (GetModuleFileName(nullptr, name, sizeof(name)-1) >= sizeof(name)-1)
         error("failed to get module name");
     int len = snprintf(command, sizeof(command)-1,
         "\"%s\" child \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\"",
@@ -282,8 +282,8 @@ void create_child(const char *hashName, const char *pvHashName,
     if (len < 0 || len >= sizeof(command)-1)
         error("failed to create command line for child"); 
 
-    BOOL success = CreateProcess(NULL, command, NULL, NULL, TRUE,
-        0, NULL, NULL, &startInfo, &procInfo);
+    BOOL success = CreateProcess(nullptr, command, nullptr, nullptr, TRUE,
+        0, nullptr, nullptr, &startInfo, &procInfo);
     if (!success)
         error("failed to create child process (%d)", GetLastError());
     CloseHandle(procInfo.hThread);
@@ -308,7 +308,7 @@ void create_child(const char *hashName, const char *pvHashName,
         error("failed to get executable path");
 #endif
     execl(exe, "Gull", "child", hashName, pvHashName, pawnHashName,
-        dataName, settingsName, sharedName, infoName, tbPath, NULL);
+        dataName, settingsName, sharedName, infoName, tbPath, nullptr);
     error("failed to exec: %s", strerror(errno));
 #endif
 }
@@ -346,7 +346,7 @@ static void nuke_child(unsigned pid)
 {
 #ifdef WINDOWS
     HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, (DWORD)pid);
-    if (handle == NULL)
+    if (handle == nullptr)
         return;
     TerminateProcess(handle, EXIT_SUCCESS);
     if (WaitForSingleObject(handle, INFINITE) != WAIT_OBJECT_0)
@@ -354,7 +354,7 @@ static void nuke_child(unsigned pid)
     CloseHandle(handle);
 #else
     kill((pid_t)pid, SIGKILL);
-    waitpid(pid, NULL, 0);
+    waitpid(pid, nullptr, 0);
 #endif
 }
 
@@ -375,29 +375,9 @@ static void msleep(unsigned ms)
  */
 int64_t get_time()
 {
-#ifdef WINDOWS
-    return GetTickCount64();
-#else
-#ifndef MACOSX
-    // Linux:
-    struct timespec ts;
-    unsigned tick = 0;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    tick  = ts.tv_nsec / 1000000;
-    tick += ts.tv_sec * 1000;
-    return tick;
-#else
-    // MacOSX:
-    static mach_timebase_info_data_t info;
-    static bool init = false;
-    if (!init)
-    {
-        mach_timebase_info(&info);
-        init = true;
-    }
-    return (int64_t)((mach_absolute_time() * info.numer / info.denom) / 1000000);
-#endif
-#endif
+    auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
 }
 
 /*
@@ -410,8 +390,8 @@ static void mutex_init(GMutex *mutex)
     memset(&attr, 0, sizeof(attr));
     attr.nLength = sizeof(attr);
     attr.bInheritHandle = TRUE;
-    *mutex = CreateMutex(&attr, FALSE, NULL);
-    if (*mutex == NULL)
+    *mutex = CreateMutex(&attr, FALSE, nullptr);
+    if (*mutex == nullptr)
         error("failed to create mutex (%d)", GetLastError());
 }
 
@@ -451,8 +431,8 @@ static void event_init(GEvent *event)
     memset(&attr, 0, sizeof(attr));
     attr.nLength = sizeof(attr);
     attr.bInheritHandle = TRUE;
-    *event = CreateEvent(&attr, TRUE, FALSE, NULL);
-    if (*event == NULL)
+    *event = CreateEvent(&attr, TRUE, FALSE, nullptr);
+    if (*event == nullptr)
         error("failed to create event (%d)", GetLastError());
 }
 
@@ -548,7 +528,7 @@ static DWORD forward(LPVOID param)
     while (true)
     {
         DWORD len;
-        if (!ReadFile(in, buf, sizeof(buf), &len, NULL))
+        if (!ReadFile(in, buf, sizeof(buf), &len, nullptr))
             error("failed to read input (%d)", GetLastError());
         if (len == 0)
         {
@@ -560,7 +540,7 @@ static DWORD forward(LPVOID param)
         while (ptr < len)
         {
             DWORD writelen;
-            if (!WriteFile(out, buf + ptr, len - ptr, &writelen, NULL))
+            if (!WriteFile(out, buf + ptr, len - ptr, &writelen, nullptr))
                 error("failed to forward input (%d)", GetLastError());
             ptr += writelen;
         }
@@ -578,7 +558,7 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
 
 #ifdef WINDOWS
     static HANDLE handle = INVALID_HANDLE_VALUE;
-    static GEvent event = NULL;
+    static GEvent event = nullptr;
     static bool init = false;
     if (!init)
     {
@@ -593,16 +573,16 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
             HANDLE out = CreateNamedPipe(name,
                 PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 2,
-                4 * IOSIZE, 4 * IOSIZE, 0, NULL);
+                4 * IOSIZE, 4 * IOSIZE, 0, nullptr);
             if (out == INVALID_HANDLE_VALUE)
                 error("failed to create named pipe #1 (%d)", GetLastError());
-            handle = CreateFile(name, GENERIC_READ, 0, NULL,
-                OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+            handle = CreateFile(name, GENERIC_READ, 0, nullptr,
+                OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
             if (handle == INVALID_HANDLE_VALUE)
                 error("failed to create named pipe #2 (%d)", GetLastError());
-            HANDLE thread = CreateThread(NULL, 0, forward, (LPVOID)out, 0,
-                NULL);
-            if (thread == NULL)
+            HANDLE thread = CreateThread(nullptr, 0, forward, (LPVOID)out, 0,
+                nullptr);
+            if (thread == nullptr)
                 error("failed to create thread (%d)", GetLastError());
         }
         event_init(&event);
@@ -687,7 +667,7 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(STDIN_FILENO, &fds);
-        ssize_t res = select(STDIN_FILENO+1, &fds, NULL, NULL, &tv);
+        ssize_t res = select(STDIN_FILENO+1, &fds, nullptr, nullptr, &tv);
         if (res < 0)
             error("failed to wait for input: %s", strerror(errno));
         if (res == 0)
@@ -737,7 +717,7 @@ static void put_line(char *line, unsigned linelen)
 #ifdef WINDOWS
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD len;
-    if (!WriteFile(handle, line, linelen, &len, NULL) || len != linelen)
+    if (!WriteFile(handle, line, linelen, &len, nullptr) || len != linelen)
         error("failed to write output (%d)", GetLastError());
     FlushFileBuffers(handle);
 #else
@@ -770,8 +750,8 @@ static void init_os(void)
         FlushConsoleInputBuffer(handle);
     }
 
-    HANDLE job = CreateJobObject(NULL, NULL);
-    if (job == NULL)
+    HANDLE job = CreateJobObject(nullptr, nullptr);
+    if (job == nullptr)
         error("failed to create job object (%d)", GetLastError());
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
     memset(&info, 0, sizeof(info));

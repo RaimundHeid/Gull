@@ -47,7 +47,7 @@ endif
 DATE = $(shell date +%y%m%d)
 
 # Common CFLAGS
-CFLAGS = -fno-exceptions -fno-rtti -Wno-parentheses
+CFLAGS = -std=c++11 -fno-exceptions -fno-rtti -Wno-parentheses
 
 ifeq ($(OS),windows)
     CFLAGS += -D_WIN32_WINNT=0x0601

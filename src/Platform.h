@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <setjmp.h>
 #include <pthread.h>
+#include <chrono>
 
 typedef int *GHandle;
 typedef int GProcess;
@@ -18,6 +19,9 @@ typedef pthread_cond_t GCondVar;
 
 #define __forceinline   inline
 #define __align(x)      __attribute__((aligned(x)))
+#ifdef PATH_MAX
+#undef PATH_MAX
+#endif
 #define PATH_MAX        4096
 #define SIZE_T          "zu"
 #define IOSIZE          4096
@@ -28,6 +32,7 @@ typedef pthread_cond_t GCondVar;
 #include <setjmp.h>
 #include <windows.h>
 #include <intrin.h>
+#include <chrono>
 
 typedef HANDLE GMutex;
 typedef HANDLE GEvent;

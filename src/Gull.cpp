@@ -2,16 +2,30 @@
 #include "Platform.h"
 #include "data.h"
 
+#include <algorithm>
+#include <cmath>
+
 #define STRING2(x)  #x
 #define STRING(x)   STRING2(x)
 
-#define Convert(x,type) ((type)(x))
+#include <type_traits>
 
-#define Abs(x) ((x) > 0 ? (x) : (-(x)))
-#define Sgn(x) ((x) == 0 ? 0 : ((x) > 0 ? 1 : (-1)))
-#define Min(x,y) ((x) < (y) ? (x) : (y))
-#define Max(x,y) ((x) > (y) ? (x) : (y))
-#define Sqr(x) ((x) * (x))
+template<typename T> inline T Abs(T x) { return std::abs(x); }
+template<typename T> inline int Sgn(T x) { return (x == 0) ? 0 : ((x > 0) ? 1 : -1); }
+
+template<typename T, typename U>
+inline typename std::common_type<T, U>::type Min(T x, U y) { 
+    return (x < y) ? x : y; 
+}
+
+template<typename T, typename U>
+inline typename std::common_type<T, U>::type Max(T x, U y) { 
+    return (x > y) ? x : y; 
+}
+
+template<typename T> inline T Sqr(T x) { return x * x; }
+
+#define Convert(x,type) ((type)(x))
 #define T(x) ((x) != 0)
 #define F(x) ((x) == 0)
 #define Even(x) F((x) & 1)
@@ -1034,7 +1048,7 @@ uint64_t rand64(void)
 
 static char SyzygyPath[PATH_MAX] = {'\0'};
 #define MAX_THREADS     (PAGE_SIZE / sizeof(GThreadInfo *))
-static GThreadInfo *THREADS[MAX_THREADS] = {NULL};
+static GThreadInfo *THREADS[MAX_THREADS] = {nullptr};
 
 static void stop(void)
 {
@@ -1056,7 +1070,7 @@ static void go(void)
             Current->ply,
             Current->castle_flags,
             Current->ep_square,
-            (Current->turn == White), NULL);
+            (Current->turn == White), nullptr);
         if (res != TB_RESULT_FAILED)
         {
             int bestScore = TbValues[TB_GET_WDL(res)];
@@ -1356,7 +1370,7 @@ inline GEntry * probe_hash() {
         Entry->date = SHARED->date;
         return Entry;
     }
-    return NULL;
+    return nullptr;
 }
 
 inline GPVEntry * probe_pv_hash() {
@@ -1364,7 +1378,7 @@ inline GPVEntry * probe_pv_hash() {
         PVEntry->date = SHARED->date;
         return PVEntry;
     }
-    return NULL;
+    return nullptr;
 }
 
 void move_to_string(int move, char string[]) { 
@@ -4897,7 +4911,7 @@ static void send_best_move(const int *PV, size_t nodes, size_t tbHits,
 
 static inline int64_t get_number(const char *token)
 {
-    if (token == NULL)
+    if (token == nullptr)
         return 0;
     return (int64_t)atoll(token);
 }
@@ -4937,9 +4951,9 @@ void uci(void)
             nuke_children();
             exit(EXIT_SUCCESS);
         }
-        char *saveptr = NULL;
+        char *saveptr = nullptr;
         char *token = strtok_r(line, " ", &saveptr);
-        if (token == NULL)
+        if (token == nullptr)
             /* NOP */ ;
         else if (strcmp(token, "go") == 0)
         {
@@ -4948,22 +4962,22 @@ void uci(void)
             unsigned binc = 0, btime = 0, depth = 256, movestogo = 0,
                 winc = 0, wtime = 0, movetime = 0;
             bool infinite = false, ponder = false;
-            while ((token = strtok_r(NULL, " ", &saveptr)) != NULL)
+            while ((token = strtok_r(nullptr, " ", &saveptr)) != nullptr)
             {
                 if (strcmp(token, "binc") == 0)
-                    binc = get_number(strtok_r(NULL, " ", &saveptr));
+                    binc = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "btime") == 0)
-                    btime = get_number(strtok_r(NULL, " ", &saveptr));
+                    btime = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "winc") == 0)
-                    winc = get_number(strtok_r(NULL, " ", &saveptr));
+                    winc = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "wtime") == 0)
-                    wtime = get_number(strtok_r(NULL, " ", &saveptr));
+                    wtime = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "movetime") == 0)
-                    movetime = get_number(strtok_r(NULL, " ", &saveptr));
+                    movetime = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "movetogo") == 0)
-                    movestogo = get_number(strtok_r(NULL, " ", &saveptr));
+                    movestogo = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "depth") == 0)
-                    depth = get_number(strtok_r(NULL, " ", &saveptr));
+                    depth = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "infinite") == 0)
                     infinite = true;
                 else if (strcmp(token, "ponder") == 0)
@@ -5029,8 +5043,8 @@ void uci(void)
         }
         else if (strcmp(token, "position") == 0)
         {
-            token = strtok_r(NULL, " ", &saveptr);
-            if (token == NULL)
+            token = strtok_r(nullptr, " ", &saveptr);
+            if (token == nullptr)
                 goto bad_command;
             char *moves;
             if (strcmp(token, "fen") == 0)
@@ -5047,9 +5061,9 @@ void uci(void)
             else
                 goto bad_command;
             token = strtok_r(moves, " ", &saveptr);
-            if (token != NULL && strcmp(token, "moves") == 0)
+            if (token != nullptr && strcmp(token, "moves") == 0)
             {
-                while ((token = strtok_r(NULL, " ", &saveptr)) != NULL)
+                while ((token = strtok_r(nullptr, " ", &saveptr)) != nullptr)
                 {
                     int move = move_from_string(token);
                     if (Current->turn) do_move<1>(move); else do_move<0>(move);
@@ -5064,16 +5078,16 @@ void uci(void)
         }
         else if (strcmp(token, "setoption") == 0)
         {
-            token = strtok_r(NULL, " ", &saveptr);
-            if (token == NULL || strcmp(token, "name") != 0)
+            token = strtok_r(nullptr, " ", &saveptr);
+            if (token == nullptr || strcmp(token, "name") != 0)
                 goto bad_command;
-            const char *name = strtok_r(NULL, " ", &saveptr);
-            if (name == NULL)
+            const char *name = strtok_r(nullptr, " ", &saveptr);
+            if (name == nullptr)
                 goto bad_command;
-            token = strtok_r(NULL, " ", &saveptr);
-            if (token == NULL || strcmp(token, "value") != 0)
+            token = strtok_r(nullptr, " ", &saveptr);
+            if (token == nullptr || strcmp(token, "value") != 0)
                 goto bad_command;
-            if (token == NULL)
+            if (token == nullptr)
                 goto bad_command;
             unsigned numThreads = SETTINGS->numThreads;
             unsigned multiPV = SETTINGS->multiPV;
@@ -5082,20 +5096,20 @@ void uci(void)
             int64_t n = 0;
             if (strcmp(name, "Hash") == 0)
             {
-                uint64_t n = get_number(strtok_r(NULL, " ", &saveptr));
+                uint64_t n = get_number(strtok_r(nullptr, " ", &saveptr));
                 hashSize = HASH_SIZE(n);
             }
             else if (strcmp(name, "Threads") == 0)
-                numThreads = get_number(strtok_r(NULL, " ", &saveptr));
+                numThreads = get_number(strtok_r(nullptr, " ", &saveptr));
             else if (strcmp(name, "MultiPV") == 0)
-                multiPV = get_number(strtok_r(NULL, " ", &saveptr));
+                multiPV = get_number(strtok_r(nullptr, " ", &saveptr));
             else if (strcmp(name, "SyzygyPath") == 0)
             {
-                if (saveptr != NULL && strlen(saveptr) < sizeof(SyzygyPath)-1)
+                if (saveptr != nullptr && strlen(saveptr) < sizeof(SyzygyPath)-1)
                    memcpy(SyzygyPath, saveptr, strlen(saveptr)+1);
             }
             else if (strcmp(name, "SyzygyProbeDepth") == 0)
-                syzygyProbeDepth = get_number(strtok_r(NULL, " ", &saveptr));
+                syzygyProbeDepth = get_number(strtok_r(nullptr, " ", &saveptr));
             else
                 goto bad_command;
             reset(numThreads, multiPV, syzygyProbeDepth, hashSize, SyzygyPath);
@@ -5159,19 +5173,19 @@ int main(int argc, char **argv)
             *infoStr = argv[8],
             *tbPath = argv[9];
         init_object(dataStr, sizeof(GGlobalData), DATA, false, true, true,
-            NULL);
+            nullptr);
         init_object(settingsStr, sizeof(GSettings), SETTINGS, false,
-            true, true, NULL);
+            true, true, nullptr);
         init_object(sharedStr, sizeof(GSharedInfo), SHARED, false, false,
-            true, NULL);
+            true, nullptr);
         init_object(hashStr, SETTINGS->hashSize, HASH, false, false, true,
-            NULL);
+            nullptr);
         init_object(pvHashStr, pvHashSize, PVHASH, false, false, true,
-            NULL);
+            nullptr);
         init_object(pawnHashStr, pawnHashSize, PAWNHASH, false, false,
-            true, NULL);
+            true, nullptr);
         init_object(infoStr, sizeof(GThreadInfo), INFO, false, false, true,
-            NULL);
+            nullptr);
         INFO->pid = get_pid();
         tb_init(tbPath);
         for (unsigned i = 0; i < SETTINGS->numThreads; i++)
@@ -5185,7 +5199,7 @@ int main(int argc, char **argv)
             init_object_name(infoName, sizeof(infoName)-1, "INFO",
                 SETTINGS->parentPid, i);
             THREADS[i] = (GThreadInfo *)init_object(infoName,
-                sizeof(GThreadInfo), NULL, false, false, true, NULL);
+                sizeof(GThreadInfo), nullptr, false, false, true, nullptr);
         }
         init_search(false);
 
@@ -5208,16 +5222,16 @@ int main(int argc, char **argv)
     else if (argc > 2 && strcmp(argv[1], "bench") == 0)
     {
         const int benchDepth = atoi(argv[2]);
-        init_object(NULL, sizeof(GGlobalData), DATA, true, false, true, NULL);
+        init_object(nullptr, sizeof(GGlobalData), DATA, true, false, true, nullptr);
         init_data();
         GSettings settings;
         memset(&settings, 0, sizeof(settings));
         settings.numThreads = 1;
         settings.hashSize   = 8 * (1 << 20);        // 8MB
-        init_object(NULL, sizeof(GSettings), SETTINGS, true, true, true,
+        init_object(nullptr, sizeof(GSettings), SETTINGS, true, true, true,
             &settings);
-        init_object(NULL, sizeof(GSharedInfo), SHARED, true, false, true,
-            NULL);
+        init_object(nullptr, sizeof(GSharedInfo), SHARED, true, false, true,
+            nullptr);
         mutex_init(&SHARED->mutex);
 #ifdef LINUX
         cond_init(&SHARED->goCondVar);
@@ -5226,10 +5240,10 @@ int main(int argc, char **argv)
         event_init(&SHARED->goEvent);
 #endif
 
-        init_object(NULL, SETTINGS->hashSize, HASH, true, false, true, NULL);
-        init_object(NULL, pvHashSize, PVHASH, true, false, true, NULL);
-        init_object(NULL, pawnHashSize, PAWNHASH, true, false, true, NULL);
-        init_object(NULL, sizeof(GThreadInfo), INFO, true, false, true, NULL);
+        init_object(nullptr, SETTINGS->hashSize, HASH, true, false, true, nullptr);
+        init_object(nullptr, pvHashSize, PVHASH, true, false, true, nullptr);
+        init_object(nullptr, pawnHashSize, PAWNHASH, true, false, true, nullptr);
+        init_object(nullptr, sizeof(GThreadInfo), INFO, true, false, true, nullptr);
         INFO->pid = get_pid();
         THREADS[0] = INFO;
 
@@ -5266,17 +5280,17 @@ int main(int argc, char **argv)
     size_t syzygyProbeDepth = 1;
     SyzygyPath[0] = '\0';
     const char *val;
-    if ((val = getenv("LAZYGULL_HASH")) != NULL)
+    if ((val = getenv("LAZYGULL_HASH")) != nullptr)
         hashSize = HASH_SIZE((size_t)atoi(val));
-    if ((val = getenv("LAZYGULL_THREADS")) != NULL)
+    if ((val = getenv("LAZYGULL_THREADS")) != nullptr)
         numThreads = atoi(val);
-    if ((val = getenv("LAZYGULL_SYZYGY_PATH")) != NULL)
+    if ((val = getenv("LAZYGULL_SYZYGY_PATH")) != nullptr)
         strncpy(SyzygyPath, val, sizeof(SyzygyPath)-1);
-    if ((val = getenv("LAZYGULL_SYZYGY_PROBE_DEPTH")) != NULL)
+    if ((val = getenv("LAZYGULL_SYZYGY_PROBE_DEPTH")) != nullptr)
         syzygyProbeDepth = atoi(val);
 
     unsigned multiPV = 1;
-    if ((val = getenv("LAZYGULL_MULTIPV")) != NULL)
+    if ((val = getenv("LAZYGULL_MULTIPV")) != nullptr)
         multiPV = atoi(val);
 
     create_children(numThreads, multiPV, syzygyProbeDepth, hashSize, SyzygyPath);
@@ -5310,7 +5324,7 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
     // Create shared objects:
     char dataName[256] = {0};
     init_object_name(dataName, sizeof(dataName)-1, "DATA", pid, 0);
-    init_object(dataName, sizeof(GGlobalData), DATA, true, false, true, NULL);
+    init_object(dataName, sizeof(GGlobalData), DATA, true, false, true, nullptr);
     init_data();
 
     char settingsName[256] = {0};
@@ -5326,21 +5340,21 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
 
     char hashName[256] = {0};
     init_object_name(hashName, sizeof(hashName)-1, "HASH", pid, 0);
-    init_object(hashName, hashSize, HASH, true, false, true, NULL);
+    init_object(hashName, hashSize, HASH, true, false, true, nullptr);
 
     char pvHashName[256] = {0};
     init_object_name(pvHashName, sizeof(pvHashName)-1, "PVHASH", pid, 0);
-    init_object(pvHashName, pvHashSize, PVHASH, true, false, true, NULL);
+    init_object(pvHashName, pvHashSize, PVHASH, true, false, true, nullptr);
 
     char pawnHashName[256] = {0};
     init_object_name(pawnHashName, sizeof(pawnHashName)-1, "PAWNHASH", pid, 0);
     init_object(pawnHashName, pawnHashSize, PAWNHASH, true, false, true,
-        NULL);
+        nullptr);
 
     char sharedName[256] = {0};
     init_object_name(sharedName, sizeof(sharedName)-1, "SHARED", pid, 0);
     init_object(sharedName, sizeof(GSharedInfo), SHARED, true, false, true,
-        NULL);
+        nullptr);
     SHARED->init = numThreads;
     mutex_init(&SHARED->mutex);
 #ifdef LINUX
@@ -5358,7 +5372,7 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
         char infoName[256] = {0};
         init_object_name(infoName, sizeof(infoName)-1, "INFO", pid, i);
         THREADS[i] = (GThreadInfo *)init_object(infoName, sizeof(GThreadInfo),
-            NULL, true, false, true, NULL);
+            nullptr, true, false, true, nullptr);
         THREADS[i]->stop = true;
         THREADS[i]->newGame = true;
         THREADS[i]->id = (unsigned)i;
@@ -5371,7 +5385,7 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
             settingsName, sharedName, infoName, tbPath);
     }
 
-    init_object(NULL, sizeof(GThreadInfo), INFO, true, false, true, NULL);
+    init_object(nullptr, sizeof(GThreadInfo), INFO, true, false, true, nullptr);
     tb_init(SyzygyPath);
 
     // Wait for threads to finish initializing:
