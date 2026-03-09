@@ -109,7 +109,7 @@ else
 endif
 
 # Targets
-.PHONY: help build pgo-build debug tb clean
+.PHONY: help build pgo-build debug clean
 
 help:
 	@echo 
@@ -138,13 +138,13 @@ help:
 	@echo "    make build"
 	@echo
 
-build: tb
+build:
 	$(CC) $(CFLAGS) -O3 $(OS_DEF) -c Gull.cpp -o Gull.o
 	$(CC) $(CFLAGS) -O3 $(OS_DEF) -x c++ -c tbprobe.c -o tbprobe.o
 	$(CC) $(CFLAGS) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull$(EXE)
 	$(STRIP) LazyGull$(EXE)
 
-pgo-build: tb
+pgo-build:
 	rm -f *.gcda *.profraw *.profdata
 	$(CC) $(CFLAGS) -O3 $(PROF_GEN) $(OS_DEF) -c Gull.cpp -o Gull.o
 	$(CC) $(CFLAGS) -O3 $(PROF_GEN) $(OS_DEF) -x c++ -c tbprobe.c -o tbprobe.o
@@ -156,21 +156,10 @@ pgo-build: tb
 	$(CC) $(CFLAGS) $(PROF_USE) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull$(EXE)
 	$(STRIP) LazyGull$(EXE)
 
-debug: tb
+debug:
 	$(CC) $(CFLAGS) -O0 -g $(OS_DEF) -c Gull.cpp -o Gull.o
 	$(CC) $(CFLAGS) -O0 -g $(OS_DEF) -x c++ -c tbprobe.c -o tbprobe.o
 	$(CC) $(CFLAGS) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull$(EXE)
-
-tb: Fathom-master.zip
-	@if [ ! -f tbprobe.c ]; then \
-		unzip -o -j Fathom-master.zip "Fathom-master/src/tbprobe.h" -d "./"; \
-		unzip -o -j Fathom-master.zip "Fathom-master/src/tbprobe.c" -d "./"; \
-		unzip -o -j Fathom-master.zip "Fathom-master/src/tbcore.h" -d "./"; \
-		unzip -o -j Fathom-master.zip "Fathom-master/src/tbcore.c" -d "./"; \
-	fi
-
-Fathom-master.zip:
-	curl -L https://github.com/basil00/Fathom/archive/master.zip -o Fathom-master.zip
 
 clean:
 	rm -f LazyGull LazyGull.exe Gull.o tbprobe.o

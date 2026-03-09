@@ -1,0 +1,6 @@
+*.o
+LazyGull
+LazyGull.exe
+*.profraw
+*.profdata
+*.gcda
