@@ -905,7 +905,7 @@ void setup_board();
 const char *get_board(const char fen[]);
 void move_to_string(int move, char string[]);
 int move_from_string(char string[]);
-void pick_pv();
+void pick_pv(unsigned pvPtr, unsigned pvLen);
 template <bool me> void do_move(int move);
 template <bool me> void undo_move(int move);
 void do_null();
@@ -1419,7 +1419,7 @@ void pick_pv(unsigned pvPtr, unsigned pvLen)
     GEntry *Entry;
     GPVEntry *PVEntry;
     int i, depth, move;
-    if (pvPtr >= Min(pvLen, MAX_PV_LEN))
+    if (pvPtr >= Min(pvLen, (unsigned)MAX_PV_LEN - 1))
     {
         INFO->PV[pvPtr] = 0;
         return;
@@ -1436,35 +1436,30 @@ void pick_pv(unsigned pvPtr, unsigned pvLen)
         depth = PVEntry->depth;
         move = PVEntry->move;
     }
-    evaluate();
-    if (Current->att[Current->turn] & King(Current->turn ^ 1))
-    {
-        INFO->PV[pvPtr] = 0;
-        return;
-    }
+
     if (move && (Current->turn ? is_legal<1>(move) : is_legal<0>(move)))
     {
-        if (Current->turn) do_move<1>(move); else do_move<0>(move);
-        evaluate();
-        if (Current->att[Current->turn] & King(Current->turn ^ 1))
-        {
-            if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
-            INFO->PV[pvPtr] = 0;
-            return;
-        }
         INFO->PV[pvPtr] = move;
-        pvPtr++;
-        if (Current->ply >= 100) goto finish;
-        for (i = 4; i <= Current->ply; i+= 2)
-        {
-            if (Stack[sp-i] == Current->key)
-            {
-                INFO->PV[pvPtr] = 0;
-                goto finish;
+        if (Current->turn) do_move<1>(move); else do_move<0>(move);
+        
+        // Cycle detection in PV
+        bool cycle = false;
+        if (Current->ply >= 100) cycle = true;
+        else {
+            for (i = 4; i <= Current->ply; i += 2) {
+                if (Stack[sp-i] == Current->key) {
+                    cycle = true;
+                    break;
+                }
             }
         }
-        pick_pv(pvPtr, pvLen);
-finish:
+
+        if (cycle) {
+            INFO->PV[pvPtr + 1] = 0;
+        } else {
+            pick_pv(pvPtr + 1, pvLen);
+        }
+        
         if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
     }
     else
@@ -2605,16 +2600,32 @@ template <bool me> int is_legal(int move) {
         return 1;
     }
     piece = (piece >> 1) - 2;
+    int legal = 0;
     if (piece == 0) {
-        if (u & DATA->NAtt[from]) return 1;
-        else return 0;
+        if (u & DATA->NAtt[from]) legal = 1;
     } else {
         if (piece <= 2) {
-            if (DATA->BMask[from] & u) return 1;
+            if (DATA->BMask[from] & u) legal = 1;
         } else if (piece == 3) {
-            if (DATA->RMask[from] & u) return 1;
-        } else return 1;
-        return 0;
+            if (DATA->RMask[from] & u) legal = 1;
+        } else legal = 1;
+    }
+
+    if (!legal) return 0;
+
+    // Full legality check: king must not be in check after the move
+    if (me == White) {
+        do_move<0>(move);
+        evaluate();
+        int in_check = (Current->att[Black] & King(White)) != 0;
+        undo_move<0>(move);
+        return !in_check;
+    } else {
+        do_move<1>(move);
+        evaluate();
+        int in_check = (Current->att[White] & King(Black)) != 0;
+        undo_move<1>(move);
+        return !in_check;
     }
 }
 
@@ -4205,7 +4216,7 @@ skip_iid:
         }
         new_depth = depth - 2 + ext;
         do_move<me>(move);
-        if (SETTINGS->numThreads > 1) {         // XXX
+        if (SETTINGS->numThreads > 1) {         // Multi-threaded evaluation requires safety check
             evaluate();
             if (Current->att[opp] & King(me)) {
                 undo_move<me>(move);
@@ -4743,20 +4754,10 @@ void send_pv(int depth, int alpha, int beta, int score)
     INFO->selDepth = sel_depth;
     if (move && (Current->turn ? is_legal<1>(move) : is_legal<0>(move)))
     {
+        INFO->PV[0] = move;
         if (Current->turn) do_move<1>(move); else do_move<0>(move);
-        evaluate();
-        if (Current->att[Current->turn] & King(Current->turn ^ 1))
-        {
-            if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
-            INFO->PV[0] = 0;
-        }
-        else
-        {
-            INFO->PV[0] = move;
-            unsigned pvPtr = 1, pvLen = 64;
-            pick_pv(pvPtr, pvLen);
-            if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
-        }
+        pick_pv(1, 64);
+        if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
     }
     else
         INFO->PV[0] = 0;
@@ -5188,6 +5189,7 @@ int main(int argc, char **argv)
             nullptr);
         INFO->pid = get_pid();
         tb_init(tbPath);
+        char infoName[256];
         for (unsigned i = 0; i < SETTINGS->numThreads; i++)
         {
             if (i == INFO->id)
@@ -5195,7 +5197,6 @@ int main(int argc, char **argv)
                 THREADS[i] = INFO;
                 continue;
             }
-            char infoName[256] = {0};
             init_object_name(infoName, sizeof(infoName)-1, "INFO",
                 SETTINGS->parentPid, i);
             THREADS[i] = (GThreadInfo *)init_object(infoName,
@@ -5366,10 +5367,10 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
     event_init(&SHARED->initEvent);
 #endif
 
-    // Create children: 
+    // Create children:
+    char infoName[256];
     for (size_t i = 0; i < numThreads; i++)
     {
-        char infoName[256] = {0};
         init_object_name(infoName, sizeof(infoName)-1, "INFO", pid, i);
         THREADS[i] = (GThreadInfo *)init_object(infoName, sizeof(GThreadInfo),
             nullptr, true, false, true, nullptr);
@@ -5379,7 +5380,6 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
     }
     for (size_t i = 0; i < numThreads; i++)
     {
-        char infoName[256] = {0};
         init_object_name(infoName, sizeof(infoName)-1, "INFO", pid, i);
         create_child(hashName, pvHashName, pawnHashName, dataName,
             settingsName, sharedName, infoName, tbPath);
@@ -5410,7 +5410,6 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
     remove_object(sharedName);
     for (size_t i = 0; i < numThreads; i++)
     {
-        char infoName[256] = {0};
         init_object_name(infoName, sizeof(infoName)-1, "INFO", pid, i);
         remove_object(infoName);
     }
