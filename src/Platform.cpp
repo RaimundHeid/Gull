@@ -1,48 +1,62 @@
-/*
- * Windows.cpp
- * Original Gull code is in the "public domain".
- * New code: Copyright (c) 2016 the copyright holders
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
-
-#define _POSIX_
 #include <assert.h>
-#include <setjmp.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
-#include <windows.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
+#ifdef LINUX
+#ifndef __aarch64__
 #include <xmmintrin.h>
 #include <popcntintrin.h>
 #include <x86intrin.h>
+#endif
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#ifdef MACOSX
+#include <mach/mach_time.h>
+#include <mach-o/dyld.h>
+#define MAP_ANONYMOUS   MAP_ANON
+#else
+#include <sys/prctl.h>
+#endif
+#endif
 
+#ifdef WINDOWS
+#define _POSIX_
+#include <windows.h>
+#include <xmmintrin.h>
+#include <popcntintrin.h>
+#include <x86intrin.h>
+#endif
+
+#ifndef UINT64_MAX
 #define UINT64_MAX  0xFFFFFFFFFFFFFFFFull
+#endif
+#ifndef UINT32_MAX
 #define UINT32_MAX  0xFFFFFFFF
+#endif
+#ifndef UINT8_MAX
 #define UINT8_MAX   0xFF
+#endif
 
+#ifndef __aarch64__
 #define builtin_cpuid(f, ax, bx, cx, dx)    \
     __asm__ __volatile__ ("cpuid" : "=a" (ax), "=b" (bx), "=c" (cx), \
         "=d" (dx) : "a" (f))
+#endif
 
+#ifdef PAGE_SIZE
+#undef PAGE_SIZE
+#endif
 #define PAGE_SIZE       4096
 #define SIZE(size)      ((((size)-1) / PAGE_SIZE) * PAGE_SIZE + PAGE_SIZE)
 
@@ -77,14 +91,18 @@ static void log(const char *format, ...)
 void init_object_name(char *name, size_t len, const char *basename,
     unsigned id, int idx)
 {
+#ifdef WINDOWS
     int r = snprintf(name, len, "Local\\LazyGull_%u_%s_%d", id, basename, idx);
     if (r < 0 || r >= len)
         error("failed to create object name (%d)", GetLastError());
+#else
+    int r = snprintf(name, len, "/LazyGull_%u_%s_%d", id, basename, idx);
+    if (r < 0 || r >= len)
+        error("failed to create object name: %s", strerror(errno));
+#endif
 }
 
-/*
- * Init an object.
- */
+#ifdef WINDOWS
 typedef struct
 {
     char name[256];
@@ -92,10 +110,15 @@ typedef struct
 } GHandleInfo;
 
 static GHandleInfo handleInfo[16] = {0};
+#endif
 
+/*
+ * Init an object.
+ */
 void *init_object(const char *object, size_t size, void *addr,
     bool create, bool readonly, bool map, const void *value)
 {
+#ifdef WINDOWS
     size_t size2 = SIZE(size);
     HANDLE handle = INVALID_HANDLE_VALUE;
     if (object != NULL)
@@ -149,6 +172,46 @@ void *init_object(const char *object, size_t size, void *addr,
     if (!create || object == NULL)
         CloseHandle(handle);
     return ptr;
+#else
+    int fd = -1;
+    int flags = 0;
+    if (object != NULL)
+    {
+        if (create)
+            fd = shm_open(object, O_RDWR | O_CREAT | O_CLOEXEC,
+                S_IRUSR | S_IWUSR);
+        else
+            fd = shm_open(object, O_RDWR | O_CLOEXEC, 0);
+        if (fd < 0)
+            error("failed to open object %s: %s", object, strerror(errno));
+        if (create && ftruncate(fd, SIZE(size)) != 0)
+            error("failed to truncate object %s: %s", object, strerror(errno));
+        flags |= MAP_SHARED;
+    }
+    else
+        flags |= MAP_PRIVATE | MAP_ANONYMOUS;
+    if (map)
+    {
+        int prot = PROT_READ | (readonly && value == NULL? 0: PROT_WRITE);
+        flags |= (addr == NULL? 0: MAP_FIXED);
+        void *ptr = mmap(addr, SIZE(size), prot, flags, fd, 0);
+        if (ptr == MAP_FAILED || (addr != NULL && ptr != addr))
+            error("failed to map object %s: %s", object, strerror(errno));
+        if (value != NULL)
+        {
+            memcpy(ptr, value, size);
+            if (readonly && mprotect(ptr, SIZE(size), PROT_READ) != 0)
+                error("failed to protect object %s: %s", object,
+                    strerror(errno));
+        }
+        if (fd > 0)
+            close(fd);
+        return ptr;
+    }
+    if (fd > 0)
+        close(fd);
+    return NULL;
+#endif
 }
 
 /*
@@ -156,6 +219,7 @@ void *init_object(const char *object, size_t size, void *addr,
  */
 void remove_object(const char *object)
 {
+#ifdef WINDOWS
     for (unsigned i = 0; i < sizeof(handleInfo) / sizeof(handleInfo[0]); i++)
     {
         if (strcmp(handleInfo[i].name, object) == 0)
@@ -167,6 +231,10 @@ void remove_object(const char *object)
         }
     }
     error("failed to remove object \"%s\"", object);
+#else
+    if (shm_unlink(object) != 0)
+        error("failed to unlink object %s: %s", object, strerror(errno));
+#endif
 }
 
 /*
@@ -174,8 +242,13 @@ void remove_object(const char *object)
  */
 void delete_object(void *addr, size_t size)
 {
+#ifdef WINDOWS
     if (!UnmapViewOfFile(addr))
         error("failed to unmap object (%d)", GetLastError());
+#else
+    if (munmap(addr, SIZE(size)) != 0)
+        error("failed to unmap object: %s", strerror(errno));
+#endif
 }
 
 /*
@@ -185,6 +258,7 @@ void create_child(const char *hashName, const char *pvHashName,
     const char *pawnHashName, const char *dataName, const char *settingsName,
     const char *sharedName, const char *infoName, const char *tbPath)
 {
+#ifdef WINDOWS
     char name[PATH_MAX];
     char command[10 * PATH_MAX];
     PROCESS_INFORMATION procInfo;
@@ -213,6 +287,30 @@ void create_child(const char *hashName, const char *pvHashName,
     if (!success)
         error("failed to create child process (%d)", GetLastError());
     CloseHandle(procInfo.hThread);
+#else
+    pid_t pid = fork();
+    if (pid < 0)
+        error("failed to fork: %s", strerror(errno));
+    if (pid != 0)
+        return;
+#ifndef MACOSX
+    prctl(PR_SET_PDEATHSIG, SIGHUP);
+#endif
+    char exe[PATH_MAX];
+#ifndef MACOSX
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe)-1);
+    if (len < 0)
+        error("failed to read link: %s", strerror(errno));
+    exe[len] = '\0';
+#else
+    uint32_t size = sizeof(exe);
+    if (_NSGetExecutablePath(exe, &size) != 0)
+        error("failed to get executable path");
+#endif
+    execl(exe, "Gull", "child", hashName, pvHashName, pawnHashName,
+        dataName, settingsName, sharedName, infoName, tbPath, NULL);
+    error("failed to exec: %s", strerror(errno));
+#endif
 }
 
 /*
@@ -220,7 +318,11 @@ void create_child(const char *hashName, const char *pvHashName,
  */
 unsigned get_pid(void)
 {
+#ifdef WINDOWS
     return (unsigned)GetCurrentProcessId();
+#else
+    return (unsigned)getpid();
+#endif
 }
 
 /*
@@ -228,16 +330,21 @@ unsigned get_pid(void)
  */
 unsigned get_num_cpus(void)
 {
+#ifdef WINDOWS
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     return (unsigned)sysinfo.dwNumberOfProcessors;
+#else
+    return (unsigned)sysconf(_SC_NPROCESSORS_ONLN);
+#endif
 }
 
 /*
- * Nuke a chold process.
+ * Nuke a child process.
  */
 static void nuke_child(unsigned pid)
 {
+#ifdef WINDOWS
     HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, (DWORD)pid);
     if (handle == NULL)
         return;
@@ -245,6 +352,10 @@ static void nuke_child(unsigned pid)
     if (WaitForSingleObject(handle, INFINITE) != WAIT_OBJECT_0)
         error("failed to terminate child (%d)", GetLastError());
     CloseHandle(handle);
+#else
+    kill((pid_t)pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+#endif
 }
 
 /*
@@ -252,23 +363,47 @@ static void nuke_child(unsigned pid)
  */
 static void msleep(unsigned ms)
 {
+#ifdef WINDOWS
     Sleep(ms);
+#else
+    usleep(1000 * ms);
+#endif
 }
 
 /*
  * Get the time in milliseconds.
  */
-int64_t get_time(void)
+int64_t get_time()
 {
+#ifdef WINDOWS
     return GetTickCount64();
+#else
+#ifndef MACOSX
+    // Linux:
+    struct timespec ts;
+    unsigned tick = 0;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    tick  = ts.tv_nsec / 1000000;
+    tick += ts.tv_sec * 1000;
+    return tick;
+#else
+    // MacOSX:
+    static mach_timebase_info_data_t info;
+    static bool init = false;
+    if (!init)
+    {
+        mach_timebase_info(&info);
+        init = true;
+    }
+    return (int64_t)((mach_absolute_time() * info.numer / info.denom) / 1000000);
+#endif
+#endif
 }
 
 /*
  * Threads.
  */
-typedef HANDLE GMutex;
-typedef HANDLE GEvent;
-
+#ifdef WINDOWS
 static void mutex_init(GMutex *mutex)
 {
     SECURITY_ATTRIBUTES attr;
@@ -339,10 +474,72 @@ static void event_free(GEvent *event)
 {
     CloseHandle(*event);
 }
+#else
+static void mutex_init(GMutex *mutex)
+{
+    pthread_mutexattr_t attrs;
+    pthread_mutexattr_init(&attrs);
+    pthread_mutexattr_setpshared(&attrs, PTHREAD_PROCESS_SHARED);
+    pthread_mutex_init(mutex, &attrs);
+}
+
+static void cond_init(GCondVar *condVar)
+{
+    pthread_condattr_t attrs;
+    pthread_condattr_init(&attrs);
+    pthread_condattr_setpshared(&attrs, PTHREAD_PROCESS_SHARED);
+#ifndef MACOSX
+    pthread_condattr_setclock(&attrs, CLOCK_MONOTONIC);
+#endif
+    pthread_cond_init(condVar, &attrs);
+}
+
+#define mutex_unlock    pthread_mutex_unlock
+
+static void mutex_lock(GMutex *mutex)
+{
+    pthread_mutex_lock(mutex);
+}
+
+static bool mutex_lock(GMutex *mutex, uint64_t timeout)
+{
+#ifndef MACOSX
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
+    {
+        // Backup strat.
+        mutex_lock(mutex);
+        return false;
+    }
+    ts.tv_nsec += timeout * 1000000;
+    int r = pthread_mutex_timedlock(mutex, &ts);
+    return (r == ETIMEDOUT);
+#else
+    // MacOS doesn't support timedlock.
+    mutex_lock(mutex);
+    return false;
+#endif
+}
+
+static void mutex_free(GMutex *mutex)
+{
+    // NOP 
+}
+
+#define cond_signal     pthread_cond_signal
+#define cond_broadcast  pthread_cond_broadcast
+#define cond_wait       pthread_cond_wait
+
+static void cond_free(GCondVar *mutex)
+{
+    // NOP
+}
+#endif
 
 /*
- * Input
+ * Input.
  */
+#ifdef WINDOWS
 static DWORD forward(LPVOID param)
 {
     char buf[4 * IOSIZE];
@@ -371,6 +568,7 @@ static DWORD forward(LPVOID param)
         FlushFileBuffers(out);
     }
 }
+#endif
 
 static bool get_line(char *line, unsigned linelen, uint64_t timeout)
 {
@@ -378,6 +576,7 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
     static unsigned ptr = 0, end = 0;
     unsigned i = 0;
 
+#ifdef WINDOWS
     static HANDLE handle = INVALID_HANDLE_VALUE;
     static GEvent event = NULL;
     static bool init = false;
@@ -409,7 +608,8 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
         event_init(&event);
         init = true;
     }
- 
+#endif
+
     while (true)
     {
         bool space = false;
@@ -439,6 +639,7 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
             }
         }
 
+#ifdef WINDOWS
         OVERLAPPED overlapped;
         memset(&overlapped, 0, sizeof(overlapped));
         overlapped.hEvent = event;
@@ -449,7 +650,7 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
                 error("failed to read input (%d)", GetLastError());
             bool timedout = false;
 
-            switch (WaitForSingleObject(event, timeout))
+            switch (WaitForSingleObject(event, (DWORD)timeout))
             {
                 case WAIT_TIMEOUT:
                     if (!CancelIo(handle))
@@ -477,25 +678,78 @@ static bool get_line(char *line, unsigned linelen, uint64_t timeout)
 
         ptr = 0;
         end = len;
+#else
+        struct timeval tv;
+        uint64_t cap_timeout = timeout;
+        if (cap_timeout > 1000000000ull) cap_timeout = 1000000000ull;
+        tv.tv_sec  = cap_timeout / 1000;
+        tv.tv_usec = (cap_timeout % 1000) * 1000;
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        ssize_t res = select(STDIN_FILENO+1, &fds, NULL, NULL, &tv);
+        if (res < 0)
+            error("failed to wait for input: %s", strerror(errno));
+        if (res == 0)
+            return true;   // Timeout
+
+        do
+        {
+            res = read(STDIN_FILENO, buf, sizeof(buf));
+        }
+        while (res < 0 && errno == EINTR);
+
+        if (res == 0)
+        {
+            line[0] = (char)EOF;
+            return false;
+        }
+        if (res < 0)
+            error("failed to read input: %s", strerror(errno));
+
+        ptr = 0;
+        end = res;
+#endif
     }
 }
 
 /*
- * Output
+ * Output.
  */
 static void put_line(char *line, unsigned linelen)
 {
+#ifdef WINDOWS
     if (linelen > _POSIX_PIPE_BUF)
+#else
+    if (linelen > PIPE_BUF)
+#endif
     {
         log("warning: output \"%s\" too long (max is %u, got %u)\n", line,
-            PIPE_BUF, linelen);
+#ifdef WINDOWS
+            _POSIX_PIPE_BUF, 
+#else
+            PIPE_BUF,
+#endif
+            linelen);
         return;
     }
+
+#ifdef WINDOWS
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD len;
     if (!WriteFile(handle, line, linelen, &len, NULL) || len != linelen)
         error("failed to write output (%d)", GetLastError());
     FlushFileBuffers(handle);
+#else
+    int res;
+    do
+    {
+        res = write(STDOUT_FILENO, line, linelen);
+    }
+    while (res < 0 && (errno == EINTR || errno == EAGAIN));
+    if (res != linelen)
+        error("failed to write output: %s", strerror(errno));
+#endif
 }
 
 /*
@@ -503,6 +757,7 @@ static void put_line(char *line, unsigned linelen)
  */
 static void init_os(void)
 {
+#ifdef WINDOWS
     HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
     DWORD mode;
     if (GetConsoleMode(handle, &mode))
@@ -524,5 +779,29 @@ static void init_os(void)
     SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info,
                 sizeof(info));
     AssignProcessToJobObject(job, GetCurrentProcess());     // Allowed to fail
+#else
+    int fds[2];
+#ifndef MACOSX
+    if (pipe2(fds, O_CLOEXEC) != 0)
+        return;
+#else
+    if (pipe(fds) != 0)
+        return;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+#endif
+    pid_t pid = getpid();
+    if (fork() == 0)
+    {
+#ifndef MACOSX
+        prctl(PR_SET_PDEATHSIG, SIGHUP);
+#endif
+        close(fds[1]);
+        char c;
+        int r = read(fds[0], &c, sizeof(c));
+        kill(-pid, SIGKILL);
+        _exit(0);
+    }
+    close(fds[0]);
+#endif
 }
-

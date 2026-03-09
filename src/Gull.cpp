@@ -1,41 +1,5 @@
 
-#ifdef MACOSX
-#ifndef LINUX
-#define LINUX
-#endif
-#endif
-
-#define W32_BUILD
-#undef W32_BUILD
-
-#ifdef W32_BUILD
-#define NTDDI_VERSION 0x05010200
-#define _WIN32_WINNT 0x0501
-#endif
-
-#define CPU_TIMING
-#undef CPU_TIMING
-
-#define EXPLAIN_EVAL
-#undef EXPLAIN_EVAL
-
-#define LARGE_PAGES
-//#undef LARGE_PAGES
-
-#define MP_NPS
-//#undef MP_NPS
-
-#define TIME_TO_DEPTH
-//#undef TIME_TO_DEPTH
-
-#ifdef LINUX
-#include "Linux.h"
-#endif
-
-#ifdef WINDOWS
-#include "Windows.h"
-#endif
-
+#include "Platform.h"
 #include "data.h"
 
 #define STRING2(x)  #x
@@ -977,13 +941,7 @@ static void reset(size_t numThreads, size_t multiPV, size_t syzygyProbeDepth, si
 
 #include "tbprobe.h"
 
-#ifdef LINUX
-#include "Linux.cpp"
-#endif
-
-#ifdef WINDOWS
-#include "Windows.cpp"
-#endif
+#include "Platform.cpp"
 
 #include "data.c"
 

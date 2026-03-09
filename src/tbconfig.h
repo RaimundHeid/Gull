@@ -55,13 +55,7 @@
 #define TB_CUSTOM_LSB(x) __builtin_ctzll(x)
 #endif
 
-#ifdef LINUX
-#include "Linux.h"
-#endif
-
-#ifdef WINDOWS
-#include "Windows.h"
-#endif
+#include "Platform.h"
 
 #include "data.h"
 
