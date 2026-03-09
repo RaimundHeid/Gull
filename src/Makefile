@@ -47,7 +47,7 @@ endif
 DATE = $(shell date +%y%m%d)
 
 # Common CFLAGS
-CFLAGS = -std=c++11 -fno-exceptions -fno-rtti -Wno-parentheses
+CFLAGS = -std=c++11 -fno-exceptions -fno-rtti -Wno-parentheses -I.
 
 ifeq ($(OS),windows)
     CFLAGS += -D_WIN32_WINNT=0x0601
@@ -162,4 +162,4 @@ debug:
 	$(CC) $(CFLAGS) Gull.o tbprobe.o $(LDFLAGS) -o LazyGull$(EXE)
 
 clean:
-	rm -f LazyGull LazyGull.exe Gull.o tbprobe.o
+	rm -f LazyGull LazyGull.exe *.o

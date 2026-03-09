@@ -1,5 +1,5 @@
 
-#include "Platform.h"
+#include "platform/Platform.h"
 #include "data.h"
 
 #include <algorithm>
@@ -955,9 +955,9 @@ static void reset(size_t numThreads, size_t multiPV, size_t syzygyProbeDepth, si
 
 #include "tbprobe.h"
 
-#include "Platform.cpp"
+#include "platform/Platform.cpp"
 
-#include "data.c"
+#include "data.cpp"
 
 #define HASH_SIZE(n)    ((n) == 0? (1 << 20): Bit(msb((size_t)(n) * (1 << 20))))
 
