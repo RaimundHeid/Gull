@@ -62,7 +62,10 @@
 #ifndef MACOSX
 extern GGlobalData DATA[];
 #else
-#define DATA ((GGlobalData *)0x304000000)
+// On macOS, MAP_FIXED at hardcoded addresses is blocked by ASLR.
+// Use the global pointer defined in Gull.cpp / Platform.cpp.
+extern GGlobalData *g_DATA;
+#define DATA (g_DATA)
 #endif
 
 /*

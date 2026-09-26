@@ -879,14 +879,27 @@ extern GEntry      HASH[];
 #else
 #define HASH        ((GEntry *)0x8000000)
 #endif
+// On Linux/Windows, init_object uses MAP_FIXED so the pointer is fixed
+#define INIT_OBJ(var, type, ...) init_object(__VA_ARGS__)
 #else
-#define INFO        ((GThreadInfo *)0x300000000)
-#define SETTINGS    ((GSettings *)0x301000000)
-#define SHARED      ((GSharedInfo *)0x302000000)
-#define DATA        ((GGlobalData *)0x304000000)
-#define PAWNHASH    ((GPawnEntry *)0x310000000)
-#define PVHASH      ((GPVEntry *)0x320000000)
-#define HASH        ((GEntry *)0x340000000)
+// On macOS, MAP_FIXED at hardcoded addresses is blocked by ASLR.
+// Use global pointers set dynamically from the mmap return value.
+static GThreadInfo *g_INFO     = nullptr;
+static GSettings   *g_SETTINGS = nullptr;
+static GSharedInfo *g_SHARED   = nullptr;
+GGlobalData        *g_DATA     = nullptr;   // non-static: accessed by tbprobe.c
+static GPawnEntry  *g_PAWNHASH = nullptr;
+static GPVEntry    *g_PVHASH   = nullptr;
+static GEntry      *g_HASH     = nullptr;
+#define INFO        (g_INFO)
+#define SETTINGS    (g_SETTINGS)
+#define SHARED      (g_SHARED)
+#define DATA        (g_DATA)
+#define PAWNHASH    (g_PAWNHASH)
+#define PVHASH      (g_PVHASH)
+#define HASH        (g_HASH)
+// On macOS, capture the mmap return value into the global pointer
+#define INIT_OBJ(var, type, ...) var = (type *)init_object(__VA_ARGS__)
 #endif
 
 jmp_buf CheckJump;
@@ -5173,19 +5186,19 @@ int main(int argc, char **argv)
             *sharedStr = argv[7],
             *infoStr = argv[8],
             *tbPath = argv[9];
-        init_object(dataStr, sizeof(GGlobalData), DATA, false, true, true,
+        INIT_OBJ(DATA,     GGlobalData, dataStr, sizeof(GGlobalData), DATA, false, true, true,
             nullptr);
-        init_object(settingsStr, sizeof(GSettings), SETTINGS, false,
+        INIT_OBJ(SETTINGS, GSettings,   settingsStr, sizeof(GSettings), SETTINGS, false,
             true, true, nullptr);
-        init_object(sharedStr, sizeof(GSharedInfo), SHARED, false, false,
+        INIT_OBJ(SHARED,   GSharedInfo, sharedStr, sizeof(GSharedInfo), SHARED, false, false,
             true, nullptr);
-        init_object(hashStr, SETTINGS->hashSize, HASH, false, false, true,
+        INIT_OBJ(HASH,     GEntry,      hashStr, SETTINGS->hashSize, HASH, false, false, true,
             nullptr);
-        init_object(pvHashStr, pvHashSize, PVHASH, false, false, true,
+        INIT_OBJ(PVHASH,   GPVEntry,    pvHashStr, pvHashSize, PVHASH, false, false, true,
             nullptr);
-        init_object(pawnHashStr, pawnHashSize, PAWNHASH, false, false,
+        INIT_OBJ(PAWNHASH, GPawnEntry,  pawnHashStr, pawnHashSize, PAWNHASH, false, false,
             true, nullptr);
-        init_object(infoStr, sizeof(GThreadInfo), INFO, false, false, true,
+        INIT_OBJ(INFO,     GThreadInfo, infoStr, sizeof(GThreadInfo), INFO, false, false, true,
             nullptr);
         INFO->pid = get_pid();
         tb_init(tbPath);
@@ -5223,15 +5236,15 @@ int main(int argc, char **argv)
     else if (argc > 2 && strcmp(argv[1], "bench") == 0)
     {
         const int benchDepth = atoi(argv[2]);
-        init_object(nullptr, sizeof(GGlobalData), DATA, true, false, true, nullptr);
+        INIT_OBJ(DATA,    GGlobalData, nullptr, sizeof(GGlobalData), DATA, true, false, true, nullptr);
         init_data();
         GSettings settings;
         memset(&settings, 0, sizeof(settings));
         settings.numThreads = 1;
         settings.hashSize   = 8 * (1 << 20);        // 8MB
-        init_object(nullptr, sizeof(GSettings), SETTINGS, true, true, true,
+        INIT_OBJ(SETTINGS, GSettings,   nullptr, sizeof(GSettings), SETTINGS, true, true, true,
             &settings);
-        init_object(nullptr, sizeof(GSharedInfo), SHARED, true, false, true,
+        INIT_OBJ(SHARED,   GSharedInfo, nullptr, sizeof(GSharedInfo), SHARED, true, false, true,
             nullptr);
         mutex_init(&SHARED->mutex);
 #ifdef LINUX
@@ -5241,10 +5254,10 @@ int main(int argc, char **argv)
         event_init(&SHARED->goEvent);
 #endif
 
-        init_object(nullptr, SETTINGS->hashSize, HASH, true, false, true, nullptr);
-        init_object(nullptr, pvHashSize, PVHASH, true, false, true, nullptr);
-        init_object(nullptr, pawnHashSize, PAWNHASH, true, false, true, nullptr);
-        init_object(nullptr, sizeof(GThreadInfo), INFO, true, false, true, nullptr);
+        INIT_OBJ(HASH,    GEntry,      nullptr, SETTINGS->hashSize, HASH, true, false, true, nullptr);
+        INIT_OBJ(PVHASH,  GPVEntry,    nullptr, pvHashSize, PVHASH, true, false, true, nullptr);
+        INIT_OBJ(PAWNHASH,GPawnEntry,  nullptr, pawnHashSize, PAWNHASH, true, false, true, nullptr);
+        INIT_OBJ(INFO,    GThreadInfo, nullptr, sizeof(GThreadInfo), INFO, true, false, true, nullptr);
         INFO->pid = get_pid();
         THREADS[0] = INFO;
 
@@ -5325,7 +5338,7 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
     // Create shared objects:
     char dataName[256] = {0};
     init_object_name(dataName, sizeof(dataName)-1, "DATA", pid, 0);
-    init_object(dataName, sizeof(GGlobalData), DATA, true, false, true, nullptr);
+    INIT_OBJ(DATA, GGlobalData, dataName, sizeof(GGlobalData), DATA, true, false, true, nullptr);
     init_data();
 
     char settingsName[256] = {0};
@@ -5336,25 +5349,25 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
     settings.syzygyProbeDepth = syzygyProbeDepth;
     settings.hashSize = hashSize;
     settings.parentPid = pid;
-    init_object(settingsName, sizeof(settings), SETTINGS, true, true, true,
+    INIT_OBJ(SETTINGS, GSettings, settingsName, sizeof(settings), SETTINGS, true, true, true,
         &settings);
 
     char hashName[256] = {0};
     init_object_name(hashName, sizeof(hashName)-1, "HASH", pid, 0);
-    init_object(hashName, hashSize, HASH, true, false, true, nullptr);
+    INIT_OBJ(HASH, GEntry, hashName, hashSize, HASH, true, false, true, nullptr);
 
     char pvHashName[256] = {0};
     init_object_name(pvHashName, sizeof(pvHashName)-1, "PVHASH", pid, 0);
-    init_object(pvHashName, pvHashSize, PVHASH, true, false, true, nullptr);
+    INIT_OBJ(PVHASH, GPVEntry, pvHashName, pvHashSize, PVHASH, true, false, true, nullptr);
 
     char pawnHashName[256] = {0};
     init_object_name(pawnHashName, sizeof(pawnHashName)-1, "PAWNHASH", pid, 0);
-    init_object(pawnHashName, pawnHashSize, PAWNHASH, true, false, true,
+    INIT_OBJ(PAWNHASH, GPawnEntry, pawnHashName, pawnHashSize, PAWNHASH, true, false, true,
         nullptr);
 
     char sharedName[256] = {0};
     init_object_name(sharedName, sizeof(sharedName)-1, "SHARED", pid, 0);
-    init_object(sharedName, sizeof(GSharedInfo), SHARED, true, false, true,
+    INIT_OBJ(SHARED, GSharedInfo, sharedName, sizeof(GSharedInfo), SHARED, true, false, true,
         nullptr);
     SHARED->init = numThreads;
     mutex_init(&SHARED->mutex);
@@ -5385,7 +5398,7 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
             settingsName, sharedName, infoName, tbPath);
     }
 
-    init_object(nullptr, sizeof(GThreadInfo), INFO, true, false, true, nullptr);
+    INIT_OBJ(INFO, GThreadInfo, nullptr, sizeof(GThreadInfo), INFO, true, false, true, nullptr);
     tb_init(SyzygyPath);
 
     // Wait for threads to finish initializing:

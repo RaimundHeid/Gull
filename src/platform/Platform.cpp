@@ -178,12 +178,13 @@ void *init_object(const char *object, size_t size, void *addr,
     if (object != nullptr)
     {
         if (create)
-            fd = shm_open(object, O_RDWR | O_CREAT | O_CLOEXEC,
-                S_IRUSR | S_IWUSR);
+            fd = shm_open(object, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
         else
-            fd = shm_open(object, O_RDWR | O_CLOEXEC, 0);
+            fd = shm_open(object, O_RDWR, 0);
         if (fd < 0)
             error("failed to open object %s: %s", object, strerror(errno));
+        // O_CLOEXEC is not supported by shm_open on macOS; set it via fcntl
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
         if (create && ftruncate(fd, SIZE(size)) != 0)
             error("failed to truncate object %s: %s", object, strerror(errno));
         flags |= MAP_SHARED;
@@ -193,10 +194,19 @@ void *init_object(const char *object, size_t size, void *addr,
     if (map)
     {
         int prot = PROT_READ | (readonly && value == nullptr? 0: PROT_WRITE);
+#ifndef MACOSX
+        // MAP_FIXED at hardcoded addresses is blocked on macOS by ASLR
         flags |= (addr == nullptr? 0: MAP_FIXED);
         void *ptr = mmap(addr, SIZE(size), prot, flags, fd, 0);
         if (ptr == MAP_FAILED || (addr != nullptr && ptr != addr))
             error("failed to map object %s: %s", object, strerror(errno));
+#else
+        // On macOS, let the OS choose the mapping address (no MAP_FIXED)
+        void *ptr = mmap(nullptr, SIZE(size), prot, flags, fd, 0);
+        (void)addr; // addr is ignored on macOS; caller must use return value
+        if (ptr == MAP_FAILED)
+            error("failed to map object %s: %s", object, strerror(errno));
+#endif
         if (value != nullptr)
         {
             memcpy(ptr, value, size);
