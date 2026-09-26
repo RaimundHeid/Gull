@@ -194,19 +194,14 @@ void *init_object(const char *object, size_t size, void *addr,
     if (map)
     {
         int prot = PROT_READ | (readonly && value == nullptr? 0: PROT_WRITE);
-#ifndef MACOSX
-        // MAP_FIXED at hardcoded addresses is blocked on macOS by ASLR
+        // If a specific address is requested, map there.  Darwin keys
+        // process-shared pthread mutexes/condition variables by virtual
+        // address, so the object containing them must live at the same
+        // address in every process; pass addr == nullptr to let the OS choose.
         flags |= (addr == nullptr? 0: MAP_FIXED);
         void *ptr = mmap(addr, SIZE(size), prot, flags, fd, 0);
         if (ptr == MAP_FAILED || (addr != nullptr && ptr != addr))
             error("failed to map object %s: %s", object, strerror(errno));
-#else
-        // On macOS, let the OS choose the mapping address (no MAP_FIXED)
-        void *ptr = mmap(nullptr, SIZE(size), prot, flags, fd, 0);
-        (void)addr; // addr is ignored on macOS; caller must use return value
-        if (ptr == MAP_FAILED)
-            error("failed to map object %s: %s", object, strerror(errno));
-#endif
         if (value != nullptr)
         {
             memcpy(ptr, value, size);

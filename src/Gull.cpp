@@ -833,6 +833,7 @@ typedef struct
 #endif
     unsigned rootDepth;
     unsigned depthLimit;
+    uint64_t nodeLimit;
     uint64_t startTime;
     uint64_t softTimeLimit;
     uint64_t hardTimeLimit;
@@ -882,12 +883,23 @@ extern GEntry      HASH[];
 // On Linux/Windows, init_object uses MAP_FIXED so the pointer is fixed
 #define INIT_OBJ(var, type, ...) init_object(__VA_ARGS__)
 #else
-// On macOS, MAP_FIXED at hardcoded addresses is blocked by ASLR.
-// Use global pointers set dynamically from the mmap return value.
+// On macOS there are no --defsym linker symbols, so the shared objects are
+// reached through global pointers set from the mmap return value.  Darwin
+// keys process-shared pthread mutexes and condition variables by virtual
+// address, so the object holding them (SHARED) has to be mapped at the very
+// same address in the parent and in every child process.  DATA must be fixed
+// as well: init_data() stores absolute pointers into DATA (the magic bitboard
+// offset tables), which are only valid in another process if DATA is mapped
+// at the same address there.  The remaining objects exchange plain data with
+// no self-references and may be mapped anywhere.  The previously used
+// addresses (0x300000000 and up) are no longer mappable on current macOS
+// because they collide with the dyld shared cache.
+#define SHARED_ADDRESS  ((GSharedInfo *)0x218000000UL)
+#define DATA_ADDRESS    ((GGlobalData *)0x220000000UL)
 static GThreadInfo *g_INFO     = nullptr;
 static GSettings   *g_SETTINGS = nullptr;
-static GSharedInfo *g_SHARED   = nullptr;
-GGlobalData        *g_DATA     = nullptr;   // non-static: accessed by tbprobe.c
+static GSharedInfo *g_SHARED   = SHARED_ADDRESS;
+GGlobalData        *g_DATA     = DATA_ADDRESS;  // non-static: accessed by tbprobe.c
 static GPawnEntry  *g_PAWNHASH = nullptr;
 static GPVEntry    *g_PVHASH   = nullptr;
 static GEntry      *g_HASH     = nullptr;
@@ -4942,7 +4954,9 @@ void uci(void)
         {
             uint64_t timeout = UINT64_MAX;
             if (SHARED->state != STOPPED)
-                timeout = 100;          // 100ms
+                // Poll faster while a node limit is active so that it is
+                // honoured reasonably promptly.
+                timeout = (SHARED->nodeLimit != 0? 5: 100);
             mutex_unlock(&SHARED->mutex);
 
             bool timedout = get_line(line, sizeof(line)-1, timeout);
@@ -4955,6 +4969,17 @@ void uci(void)
             {
                 stop();
                 wait_for_stop();
+            }
+            if (SHARED->state != STOPPED && SHARED->nodeLimit != 0)
+            {
+                uint64_t nodes = 0;
+                for (unsigned i = 0; i < SETTINGS->numThreads; i++)
+                    nodes += THREADS[i]->nodes;
+                if (nodes >= SHARED->nodeLimit)
+                {
+                    stop();
+                    wait_for_stop();
+                }
             }
             if (!timedout)
                 break;
@@ -4975,6 +5000,7 @@ void uci(void)
                 continue;
             unsigned binc = 0, btime = 0, depth = 256, movestogo = 0,
                 winc = 0, wtime = 0, movetime = 0;
+            uint64_t nodes = 0;
             bool infinite = false, ponder = false;
             while ((token = strtok_r(nullptr, " ", &saveptr)) != nullptr)
             {
@@ -4992,6 +5018,8 @@ void uci(void)
                     movestogo = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "depth") == 0)
                     depth = get_number(strtok_r(nullptr, " ", &saveptr));
+                else if (strcmp(token, "nodes") == 0)
+                    nodes = get_number(strtok_r(nullptr, " ", &saveptr));
                 else if (strcmp(token, "infinite") == 0)
                     infinite = true;
                 else if (strcmp(token, "ponder") == 0)
@@ -5034,6 +5062,7 @@ void uci(void)
             SHARED->softTimeLimit = softTimeLimit;
             SHARED->hardTimeLimit = hardTimeLimit;
             SHARED->depthLimit = 2 * depth + 2;
+            SHARED->nodeLimit = nodes;
             SHARED->startTime = currTime;
             go();
         }
@@ -5186,12 +5215,14 @@ int main(int argc, char **argv)
             *sharedStr = argv[7],
             *infoStr = argv[8],
             *tbPath = argv[9];
+        // SHARED and DATA live at fixed addresses on macOS (see above) and
+        // must be mapped before the dynamically placed objects.
+        INIT_OBJ(SHARED,   GSharedInfo, sharedStr, sizeof(GSharedInfo), SHARED, false, false,
+            true, nullptr);
         INIT_OBJ(DATA,     GGlobalData, dataStr, sizeof(GGlobalData), DATA, false, true, true,
             nullptr);
         INIT_OBJ(SETTINGS, GSettings,   settingsStr, sizeof(GSettings), SETTINGS, false,
             true, true, nullptr);
-        INIT_OBJ(SHARED,   GSharedInfo, sharedStr, sizeof(GSharedInfo), SHARED, false, false,
-            true, nullptr);
         INIT_OBJ(HASH,     GEntry,      hashStr, SETTINGS->hashSize, HASH, false, false, true,
             nullptr);
         INIT_OBJ(PVHASH,   GPVEntry,    pvHashStr, pvHashSize, PVHASH, false, false, true,
@@ -5269,6 +5300,7 @@ int main(int argc, char **argv)
                 get_board(argv[i]);
             INFO->stop = false;
             SHARED->depthLimit = 2 * benchDepth + 2;
+            SHARED->nodeLimit = 0;
             SHARED->softTimeLimit = UINT32_MAX;
             SHARED->hardTimeLimit = UINT32_MAX;
             SHARED->startTime = t0;
@@ -5335,7 +5367,24 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
             "syzygyProbeDepth=%" SIZE_T ", syzygyPath=\"%s\"\n",
             numThreads, multiPV, hashSize, syzygyProbeDepth, tbPath);
 
-    // Create shared objects:
+    // Create shared objects.  SHARED and DATA live at fixed addresses on
+    // macOS and must be in place before any dynamically placed mapping is
+    // created (see the address definitions above).
+    char sharedName[256] = {0};
+    init_object_name(sharedName, sizeof(sharedName)-1, "SHARED", pid, 0);
+    INIT_OBJ(SHARED, GSharedInfo, sharedName, sizeof(GSharedInfo), SHARED, true, false, true,
+        nullptr);
+    SHARED->init = numThreads;
+    mutex_init(&SHARED->mutex);
+#ifdef LINUX
+    cond_init(&SHARED->goCondVar);
+    cond_init(&SHARED->initCondVar);
+#endif
+#ifdef WINDOWS
+    event_init(&SHARED->goEvent);
+    event_init(&SHARED->initEvent);
+#endif
+
     char dataName[256] = {0};
     init_object_name(dataName, sizeof(dataName)-1, "DATA", pid, 0);
     INIT_OBJ(DATA, GGlobalData, dataName, sizeof(GGlobalData), DATA, true, false, true, nullptr);
@@ -5364,21 +5413,6 @@ static void create_children(size_t numThreads, size_t multiPV, size_t syzygyProb
     init_object_name(pawnHashName, sizeof(pawnHashName)-1, "PAWNHASH", pid, 0);
     INIT_OBJ(PAWNHASH, GPawnEntry, pawnHashName, pawnHashSize, PAWNHASH, true, false, true,
         nullptr);
-
-    char sharedName[256] = {0};
-    init_object_name(sharedName, sizeof(sharedName)-1, "SHARED", pid, 0);
-    INIT_OBJ(SHARED, GSharedInfo, sharedName, sizeof(GSharedInfo), SHARED, true, false, true,
-        nullptr);
-    SHARED->init = numThreads;
-    mutex_init(&SHARED->mutex);
-#ifdef LINUX
-    cond_init(&SHARED->goCondVar);
-    cond_init(&SHARED->initCondVar);
-#endif
-#ifdef WINDOWS
-    event_init(&SHARED->goEvent);
-    event_init(&SHARED->initEvent);
-#endif
 
     // Create children:
     char infoName[256];
