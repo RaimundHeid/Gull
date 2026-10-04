@@ -4,3 +4,4 @@ LazyGull.exe
 *.profraw
 *.profdata
 *.gcda
+*.log
