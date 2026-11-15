@@ -71,6 +71,21 @@ The test suite includes:
 * Unit tests for move generation, SEE, make/unmake, hashing, evaluation and
   UCI parsing.
 
+
+## Profile-guided optimization
+
+If `pgo/gull.profdata` exists, `cargo build --release` automatically applies it
+through the local rustc wrapper (`.cargo/rustc-wrapper.sh`).  Generate it with:
+
+```sh
+./scripts/build-pgo.sh
+```
+
+The script builds an instrumented binary, runs a few representative searches,
+merges the profile into `pgo/gull.profdata`, and rebuilds in release mode.
+Delete `pgo/gull.profdata` (or run `cargo clean`) to return to the normal
+release build.  The profile is intentionally not committed.
+
 ## FEN/move conventions
 
 Moves use the C++ engine's internal 16-bit encoding.  `make_move(from, to)`
