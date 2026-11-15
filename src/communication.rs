@@ -98,7 +98,7 @@ pub fn run() {
             "position" => {
                 stop_and_join(&mut running, &mut engine);
                 if let Some(e) = engine.as_mut() {
-                    set_position(e, &tokens[1..]);
+                    let _ = set_position(e, &tokens[1..]);
                 }
             }
             "go" => {
@@ -131,7 +131,7 @@ pub fn run() {
             "d" | "print" => {
                 if running.is_none() {
                     if let Some(e) = engine.as_ref() {
-                        println!("{}", e.current_fen());
+                        println!("Fen: {}", e.current_fen());
                     }
                 }
             }
@@ -185,9 +185,9 @@ fn parse_option<'a>(tokens: &'a [&'a str]) -> Option<(String, &'a str)> {
     Some((name, value))
 }
 
-fn set_position(engine: &mut Engine, tokens: &[&str]) {
+fn set_position(engine: &mut Engine, tokens: &[&str]) -> bool {
     if tokens.is_empty() {
-        return;
+        return false;
     }
     let mut i = 0;
     match tokens[0] {
@@ -205,14 +205,19 @@ fn set_position(engine: &mut Engine, tokens: &[&str]) {
             engine.get_board(&fields.join(" "));
         }
         _ => {
-            engine.get_board(START_FEN);
+            return false;
         }
     }
     if i < tokens.len() && tokens[i] == "moves" {
         for mv in &tokens[i + 1..] {
-            engine.play_uci_move(mv);
+            if !engine.play_uci_move(mv) {
+                // Never continue from a partially applied position: doing so
+                // would desynchronise the engine from the GUI.
+                return false;
+            }
         }
     }
+    true
 }
 
 fn parse_go(tokens: &[&str]) -> SearchLimits {

@@ -2486,7 +2486,7 @@ impl Engine {
             }
         }
         let me = self.pos.data[self.pos.cur].turn as Color;
-        if mv != 0 && self.is_legal(me, mv) {
+        if mv != 0 && !self.is_illegal(me, mv) && self.is_legal(me, mv) {
             pv[pv_ptr] = mv;
             self.do_move(me, mv);
             let cur = self.pos.cur;
@@ -2562,7 +2562,7 @@ impl Engine {
         self.stats.sel_depth = sel_depth as i32;
         let mut pv = [0i32; 64];
         let me = self.pos.data[self.pos.cur].turn as Color;
-        if mv != 0 && self.is_legal(me, mv) {
+        if mv != 0 && !self.is_illegal(me, mv) && self.is_legal(me, mv) {
             pv[0] = mv;
             self.do_move(me, mv);
             self.pick_pv(&mut pv, 1, 64);
@@ -4814,5 +4814,22 @@ mod extra_search_tests {
         let eval = e.pos.cur().score as i32;
         let q = e.q_search(me, false, -MATE_VALUE, MATE_VALUE, 0, FLAG_NEAT_SEARCH);
         assert!(q >= eval - 1, "qsearch {q} < eval {eval}");
+    }
+}
+
+#[cfg(test)]
+mod legality_tests {
+    use crate::position::Engine;
+    use crate::types::*;
+
+    #[test]
+    fn pinned_pawn_capture_is_rejected_for_pv() {
+        let mut e = Engine::with_hash_mb(1);
+        // The white e2 pawn is pinned by the rook on e8.  Moving along the
+        // e-file is legal, capturing on d3 is not.
+        e.get_board("k3r3/8/8/8/8/3p4/4P3/4K3 w - - 0 1");
+        e.evaluate();
+        assert!(e.is_illegal(WHITE, make_move(12, 19))); // e2xd3
+        assert!(!e.is_illegal(WHITE, make_move(12, 20))); // e2e3
     }
 }

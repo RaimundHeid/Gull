@@ -464,47 +464,69 @@ impl Engine {
             Some(s) => s,
             None => return false,
         };
-        let promo = if text.len() >= 5 {
-            text.as_bytes()[4].to_ascii_lowercase()
-        } else {
-            b'\0'
-        };
-        let me = self.pos.cur().turn as Color;
-        let mut list = [0i32; 256];
-        let n = self.gen_legal_moves(me, &mut list);
-        for &mv in list.iter().take(n) {
-            if move_from(mv) != from || move_to(mv) != to {
-                continue;
-            }
-            let piece = match mv & 0xF000 {
-                FLAG_P_QUEEN => b'q',
-                FLAG_P_ROOK => b'r',
-                FLAG_P_KNIGHT => b'n',
-                FLAG_P_LIGHT | FLAG_P_DARK => b'b',
-                _ => b'\0',
-            };
-            if piece != promo {
-                continue;
-            }
-            self.do_move(me, mv);
-            // UCI positions are always rooted at Data[0].  The C++ front end
-            // copies the resulting position back to Data[0] after every move
-            // and truncates the repetition stack to the current halfmove
-            // clock.
-            let cur = self.pos.cur;
-            self.pos.data[0] = self.pos.data[cur];
-            self.pos.cur = 0;
-            let ply = self.pos.data[0].ply as usize;
-            if self.pos.sp >= ply {
-                self.pos
-                    .stack
-                    .copy_within(self.pos.sp - ply..=self.pos.sp, 0);
-                self.pos.sp = ply;
-            }
-            self.shared.root_depth = self.shared.root_depth.wrapping_add(1);
-            return true;
+        if from == to {
+            return false;
         }
-        false
+        let me = self.pos.cur().turn as Color;
+        let piece = self.pos.board.square[from] as usize;
+        let capture = self.pos.board.square[to] as usize;
+        // Basic sanity checks.  The C++ front end trusts the GUI and applies
+        // the move directly; we do the same, but reject obviously broken input
+        // instead of corrupting the board.
+        if piece == 0 || (piece & 1) != me as usize {
+            return false;
+        }
+        if capture != 0 && (capture & 1) == (piece & 1) {
+            return false;
+        }
+
+        // Reconstruct exactly the flags that C++ `move_from_string` derives
+        // from the board state.  In particular, do not require the move to be
+        // present in a generated legal-move list: the old validation path
+        // could omit legal moves, and the UCI layer must accept every GUI
+        // move or the engine will desynchronise from the board.
+        let mut mv: i32 = ((from as i32) << 6) | (to as i32);
+        if piece >= WHITE_KING && (to as i32 - from as i32).abs() == 2 {
+            mv |= FLAG_CASTLING;
+        }
+        if self.pos.data[self.pos.cur].ep_square != 0
+            && to == self.pos.data[self.pos.cur].ep_square as usize
+            && piece == ipawn(me)
+        {
+            mv |= FLAG_EP;
+        }
+        if text.len() >= 5 {
+            mv |= match text.as_bytes()[4].to_ascii_lowercase() {
+                b'q' => FLAG_P_QUEEN,
+                b'r' => FLAG_P_ROOK,
+                b'n' => FLAG_P_KNIGHT,
+                b'b' => {
+                    if ((to ^ (to >> 3)) & 1) != 0 {
+                        FLAG_P_LIGHT
+                    } else {
+                        FLAG_P_DARK
+                    }
+                }
+                _ => 0,
+            };
+        }
+
+        self.do_move(me, mv);
+        // UCI positions are always rooted at Data[0].  The C++ front end
+        // copies the resulting position back to Data[0] after every move and
+        // truncates the repetition stack to the current halfmove clock.
+        let cur = self.pos.cur;
+        self.pos.data[0] = self.pos.data[cur];
+        self.pos.cur = 0;
+        let ply = self.pos.data[0].ply as usize;
+        if self.pos.sp >= ply {
+            self.pos
+                .stack
+                .copy_within(self.pos.sp - ply..=self.pos.sp, 0);
+            self.pos.sp = ply;
+        }
+        self.shared.root_depth = self.shared.root_depth.wrapping_add(1);
+        true
     }
 
     pub fn get_board(&mut self, fen: &str) -> String {
