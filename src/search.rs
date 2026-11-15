@@ -240,12 +240,14 @@ impl Engine {
     // -- evaluation / check helpers ----------------------------------------
 
     #[inline(always)]
+    #[inline(always)]
     pub fn check(&self, me: Color) -> bool {
         (self.pos.data[self.pos.cur].att[opp(me)] & self.king(me)) != 0
     }
 
     /// `IsIllegal(me, move)` from the C++ source.
     #[inline]
+    #[inline(always)]
     pub fn is_illegal(&self, me: Color, mv: Move) -> bool {
         let from = move_from(mv);
         let to = move_to(mv);
@@ -271,6 +273,7 @@ impl Engine {
     }
 
     /// `is_legal<me>` from the C++ source.
+    #[inline(always)]
     pub fn is_legal(&mut self, me: Color, mv: Move) -> bool {
         let from = move_from(mv);
         let to = move_to(mv);
@@ -535,7 +538,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = st.moves;
+        let mut list = [0i32; MAX_MOVES];
         let mut n = 0usize;
         let oppc = opp(me);
         let mask = st.mask;
@@ -623,7 +626,7 @@ impl Engine {
         }
         if (st.att[me] & mask) == 0 {
             list[n] = 0;
-            self.pos.data[cur].moves = list;
+            self.store_moves(cur, &list, n);
             return n;
         }
         v = Self::shift_w(oppc, mask) & self.pawn(me) & !self.line(me, 6);
@@ -741,7 +744,7 @@ impl Engine {
             }
         }
         list[n] = 0;
-        self.pos.data[cur].moves = list;
+        self.store_moves(cur, &list, n);
         n
     }
 
@@ -750,7 +753,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = st.moves;
+        let mut list = [0i32; MAX_MOVES];
         let mut n = 0usize;
         let oppc = opp(me);
         let king = lsb(self.king(me));
@@ -810,7 +813,7 @@ impl Engine {
             }
             eprintln!("{}", std::backtrace::Backtrace::force_capture());
             list[n] = 0;
-            self.pos.data[cur].moves = list;
+            self.store_moves(cur, &list, n);
             return n;
         }
         let mut att_sq = lsb(att);
@@ -837,7 +840,7 @@ impl Engine {
                 );
             }
             list[n] = 0;
-            self.pos.data[cur].moves = list;
+            self.store_moves(cur, &list, n);
             return n;
         }
         if (bit(att_sq) & st.mask) != 0 {
@@ -1018,14 +1021,14 @@ impl Engine {
             }
         }
         list[n] = 0;
-        self.pos.data[cur].moves = list;
+        self.store_moves(cur, &list, n);
         n
     }
 
     pub fn mark_evasions(&mut self) {
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = st.moves;
+        let mut list = self.load_moves_list(cur);
         let mut i = 0;
         while list[i] != 0 {
             let mv = list[i] & 0xFFFF;
@@ -1044,7 +1047,7 @@ impl Engine {
             }
             i += 1;
         }
-        self.pos.data[cur].moves = list;
+        self.store_moves_list(cur, &list);
     }
 
     /// `gen_quiet_moves<me>`
@@ -1052,7 +1055,9 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = st.moves;
+        let mut list = [0i32; MAX_MOVES];
+        let start_prefix = start;
+        list[..start_prefix].copy_from_slice(&self.move_lists[cur][..start_prefix]);
         let mut n = start;
         let occ = self.piece_all();
         let free = !occ;
@@ -1164,7 +1169,7 @@ impl Engine {
             Self::add_move_score(&mut list, &mut n, from, to, 0, score);
         }
         list[n] = 0;
-        self.pos.data[cur].moves = list;
+        self.store_moves(cur, &list, n);
         n
     }
 
@@ -1173,7 +1178,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = st.moves;
+        let mut list = [0i32; MAX_MOVES];
         let mut n = 0usize;
         let oppc = opp(me);
         let clear = !(self.piece(me) | st.mask);
@@ -1341,7 +1346,7 @@ impl Engine {
             }
         }
         list[n] = 0;
-        self.pos.data[cur].moves = list;
+        self.store_moves(cur, &list, n);
         n
     }
 
@@ -1350,7 +1355,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = st.moves;
+        let mut list = [0i32; MAX_MOVES];
         let mut n = 0usize;
         let oppc = opp(me);
         let occ = self.piece_all();
@@ -1546,7 +1551,7 @@ impl Engine {
             );
         }
         list[n] = 0;
-        self.pos.data[cur].moves = list;
+        self.store_moves(cur, &list, n);
         n
     }
 
@@ -1581,6 +1586,32 @@ impl Engine {
 
     /// Generate all legal moves for `me` (helper used by UCI and tests; the
     /// search itself uses the staged generators above).
+    #[inline(always)]
+    fn store_moves(&mut self, cur: usize, list: &[i32; MAX_MOVES], n: usize) {
+        self.move_lists[cur][..=n].copy_from_slice(&list[..=n]);
+    }
+
+    #[inline(always)]
+    fn store_moves_list(&mut self, cur: usize, list: &[i32; MAX_MOVES]) {
+        let n = list.iter().position(|&m| m == 0).unwrap_or(MAX_MOVES - 1);
+        self.move_lists[cur][..=n].copy_from_slice(&list[..=n]);
+    }
+
+    #[inline(always)]
+    fn load_moves_list(&self, cur: usize) -> [i32; MAX_MOVES] {
+        let mut list = [0i32; MAX_MOVES];
+        let mut n = 0usize;
+        loop {
+            let mv = self.move_lists[cur][n];
+            list[n] = mv;
+            if mv == 0 {
+                break;
+            }
+            n += 1;
+        }
+        list
+    }
+
     pub fn gen_legal_moves(&mut self, me: Color, out: &mut [i32]) -> usize {
         let cur = self.pos.cur;
         self.pos.data[cur].mask = self.piece(opp(me));
@@ -1591,7 +1622,7 @@ impl Engine {
             let n = self.gen_captures(me);
             self.gen_quiet_moves(me, n)
         };
-        let list = self.pos.data[cur].moves;
+        let list = self.load_moves_list(cur);
         let mut k = 0usize;
         for &mv in list.iter().take(n) {
             if mv == 0 {
@@ -1665,10 +1696,11 @@ pub fn sort_moves(start: usize, finish: usize, list: &mut [i32]) {
 }
 
 impl Engine {
+    #[inline(always)]
     pub fn pick_move(&mut self) -> i32 {
         let cur = self.pos.cur;
-        let mut list = self.pos.data[cur].moves;
-        let mut idx = self.pos.data[cur].current;
+        let idx = self.pos.data[cur].current;
+        let list = &mut self.move_lists[cur];
         let mv = list[idx];
         if mv == 0 {
             return 0;
@@ -1686,7 +1718,6 @@ impl Engine {
         let value = list[best];
         list[best] = list[idx];
         list[idx] = value;
-        self.pos.data[cur].moves = list;
         self.pos.data[cur].current = idx + 1;
         value & 0xFFFF
     }
@@ -1698,16 +1729,16 @@ impl Engine {
         self.pos.data[cur] = st;
         match st.stage {
             S_HASH_MOVE | R_HASH_MOVE | E_HASH_MOVE => {
-                let mut list = st.moves;
+                let mut list = self.load_moves_list(cur);
                 list[0] = st.killer[0] as i32;
                 list[1] = 0;
-                self.pos.data[cur].moves = list;
+                self.store_moves_list(cur, &list);
             }
             S_GOOD_CAP => {
-                let mut list = st.moves;
+                let mut list = self.load_moves_list(cur);
                 self.pos.data[cur].mask = self.piece(opp(me));
                 let r = self.gen_captures(me);
-                list = self.pos.data[cur].moves;
+                list = self.load_moves_list(cur);
                 let mut p = 0usize;
                 let mut q = r as isize - 1;
                 while q >= p as isize {
@@ -1721,14 +1752,14 @@ impl Engine {
                         q -= 1;
                     }
                 }
-                self.pos.data[cur].moves = list;
+                self.store_moves_list(cur, &list);
                 self.pos.data[cur].start = p;
                 self.pos.data[cur].current = p;
-                sort(p, r, &mut self.pos.data[cur].moves);
+                sort(p, r, &mut self.move_lists[cur]);
             }
             S_SPECIAL => {
                 self.pos.data[cur].current = st.start;
-                let mut list = st.moves;
+                let mut list = self.load_moves_list(cur);
                 let mut p = st.start;
                 if st.killer[1] != 0 {
                     list[p] = st.killer[1] as i32;
@@ -1747,7 +1778,7 @@ impl Engine {
                     p += 1;
                 }
                 list[p] = 0;
-                self.pos.data[cur].moves = list;
+                self.store_moves_list(cur, &list);
             }
             S_QUIET => {
                 let start = st.start;
@@ -1757,32 +1788,32 @@ impl Engine {
             }
             S_BAD_CAP => {
                 let start = st.start;
-                let mut list = st.moves;
+                let mut list = self.load_moves_list(cur);
                 list[start] = 0;
-                self.pos.data[cur].moves = list;
+                self.store_moves_list(cur, &list);
                 self.pos.data[cur].current = 0;
                 if (st.gen_flags & FLAG_NO_BC_SORT) == 0 {
-                    sort(0, start, &mut self.pos.data[cur].moves);
+                    sort(0, start, &mut self.move_lists[cur]);
                 }
             }
             R_CAP => {
                 let r = self.gen_captures(me);
                 self.pos.data[cur].current = 0;
-                sort(0, r, &mut self.pos.data[cur].moves);
+                sort(0, r, &mut self.move_lists[cur]);
             }
             R_CHECKS => {
                 let r = self.gen_checks(me);
                 self.pos.data[cur].current = 0;
-                sort(0, r, &mut self.pos.data[cur].moves);
+                sort(0, r, &mut self.move_lists[cur]);
             }
             E_EV => {
-                let mut list = st.moves;
+                let mut list = self.load_moves_list(cur);
                 self.pos.data[cur].mask = !0u64;
                 let r = self.gen_evasions(me);
                 self.mark_evasions();
-                list = self.pos.data[cur].moves;
+                list = self.load_moves_list(cur);
                 sort(0, r, &mut list);
-                self.pos.data[cur].moves = list;
+                self.store_moves_list(cur, &list);
                 self.pos.data[cur].current = 0;
             }
             _ => {}
@@ -1798,9 +1829,10 @@ impl Engine {
             return mv;
         }
         loop {
-            let st = self.pos.data[self.pos.cur];
+            let cur = self.pos.cur;
+            let st = self.pos.data[cur];
             let idx = st.current;
-            if st.moves[idx] == 0 {
+            if self.move_lists[cur][idx] == 0 {
                 let stage = st.stage + 1;
                 self.pos.data[self.pos.cur].stage = stage;
                 if ((1u32 << stage) & STAGE_NONE) != 0 {
@@ -1812,11 +1844,11 @@ impl Engine {
             let move_val = if (st.gen_flags & FLAG_SORT) != 0 {
                 self.pick_move()
             } else {
-                let mv = st.moves[idx] & 0xFFFF;
+                let mv = self.move_lists[cur][idx] & 0xFFFF;
                 self.pos.data[self.pos.cur].current = idx + 1;
                 mv
             };
-            let st = self.pos.data[self.pos.cur];
+            let st = self.pos.data[cur];
             if st.stage == S_QUIET {
                 if move_val == st.killer[1] as i32
                     || move_val == st.killer[2] as i32
@@ -1871,7 +1903,7 @@ impl Engine {
         let mut root = [0i32; 256];
         let mut p = 0usize;
         self.pos.data[cur].current = 0;
-        self.pos.data[cur].moves[0] = 0;
+        self.move_lists[cur][0] = 0;
         loop {
             let mv = self.get_move(me, false);
             if mv == 0 {
@@ -1901,6 +1933,7 @@ impl Engine {
 // ---------------------------------------------------------------------------
 
 impl Engine {
+    #[inline(always)]
     pub fn see(&self, me: Color, mv: Move, margin: i32) -> bool {
         let t = self.tables;
         let from = move_from(mv);
@@ -2161,6 +2194,7 @@ impl Engine {
 // ---------------------------------------------------------------------------
 
 impl Engine {
+    #[inline(always)]
     pub fn probe_hash(&mut self) -> Option<usize> {
         let key = self.pos.data[self.pos.cur].key;
         let idx = (hash_key_high(key) as usize) & self.hash_mask;
@@ -2175,6 +2209,7 @@ impl Engine {
         None
     }
 
+    #[inline(always)]
     pub fn probe_pv_hash(&mut self) -> Option<usize> {
         let key = self.pos.data[self.pos.cur].key;
         let idx = (hash_key_high(key) as usize) & self.pv_hash_mask;
@@ -2189,6 +2224,7 @@ impl Engine {
         None
     }
 
+    #[inline(always)]
     pub fn hash_high(&mut self, value: i32, depth: i32) {
         let key = self.pos.data[self.pos.cur].key;
         let base = (hash_key_high(key) as usize) & self.hash_mask;
@@ -2230,6 +2266,7 @@ impl Engine {
         e.flags = 0;
     }
 
+    #[inline(always)]
     pub fn hash_low(&mut self, mv: i32, value: i32, depth: i32) {
         let key = self.pos.data[self.pos.cur].key;
         let base = (hash_key_high(key) as usize) & self.hash_mask;
@@ -2357,13 +2394,21 @@ impl Engine {
     /// `check_for_stop`: raise a `SearchAborted` unwind when a stop was
     /// requested externally or a hard limit has been reached.
     #[inline]
-    pub fn check_for_stop(&self) {
-        let now = now_ms();
+    pub fn check_for_stop(&mut self) {
+        // Polling on every node is expensive.  A 1024-node interval is still
+        // well under a millisecond at current search speeds, so `stop` remains
+        // responsive while the hot path only increments the node counter.
+        if self.pos.nodes & 0x3FF != 0 {
+            return;
+        }
+        if self.control.is_stopped() {
+            resume_unwind(Box::new(SearchAborted));
+        }
+        if self.shared.node_limit != 0 && self.pos.nodes >= self.shared.node_limit {
+            resume_unwind(Box::new(SearchAborted));
+        }
         let hard = self.shared.hard_time_limit;
-        let stop = self.control.is_stopped()
-            || (hard != INFINITE_TIME && now >= self.shared.start_time.saturating_add(hard))
-            || (self.shared.node_limit != 0 && self.pos.nodes >= self.shared.node_limit);
-        if stop {
+        if hard != INFINITE_TIME && now_ms() >= self.shared.start_time.saturating_add(hard) {
             resume_unwind(Box::new(SearchAborted));
         }
     }
@@ -2702,10 +2747,12 @@ impl Engine {
 
 impl Engine {
     #[inline(always)]
+    #[inline(always)]
     pub fn score(&self) -> i32 {
         self.pos.data[self.pos.cur].score as i32
     }
 
+    #[inline(always)]
     #[inline(always)]
     fn delta_m(&self, mv: Move) -> i32 {
         let piece = self.pos.board.square[move_from(mv)] as usize;
@@ -2713,11 +2760,13 @@ impl Engine {
     }
 
     #[inline(always)]
+    #[inline(always)]
     fn ref_index(&self, mv: Move) -> usize {
         let to = move_to(mv);
         ((self.pos.board.square[to] as usize) << 6) | to
     }
 
+    #[inline(always)]
     fn update_ref(&mut self, ref_move: i32) {
         let cur = self.pos.cur;
         let mv = self.pos.data[cur].mv as i32;
@@ -2731,6 +2780,7 @@ impl Engine {
         }
     }
 
+    #[inline(always)]
     fn update_check_ref(&mut self, ref_move: i32) {
         let cur = self.pos.cur;
         let mv = self.pos.data[cur].mv as i32;
@@ -2745,11 +2795,13 @@ impl Engine {
     }
 
     #[inline(always)]
+    #[inline(always)]
     fn history_inc(depth: i32) -> i32 {
         let d = depth >> 1;
         (d * d).min(64)
     }
 
+    #[inline(always)]
     fn history_good(&mut self, mv: Move, depth: i32) {
         let piece = self.pos.board.square[move_from(mv)] as usize;
         let idx = (piece << 6) | move_to(mv);
@@ -2762,6 +2814,7 @@ impl Engine {
         };
     }
 
+    #[inline(always)]
     fn history_bad(&mut self, mv: Move, depth: i32) {
         let piece = self.pos.board.square[move_from(mv)] as usize;
         let idx = (piece << 6) | move_to(mv);
@@ -3080,10 +3133,10 @@ impl Engine {
         let mut pext = 0;
         self.gen_evasions(me);
         self.pos.data[self.pos.cur].current = 0;
-        if self.pos.data[self.pos.cur].moves[0] == 0 {
+        if self.move_lists[self.pos.cur][0] == 0 {
             return score;
         }
-        if self.pos.data[self.pos.cur].moves[1] == 0 {
+        if self.move_lists[self.pos.cur][1] == 0 {
             pext = 1;
         } else {
             let cur = self.pos.cur;
@@ -3099,9 +3152,9 @@ impl Engine {
                     || (hash_move & 0xE000) != 0)
             {
                 let mut p = 0;
-                while self.pos.data[cur].moves[p] != 0 {
-                    if (self.pos.data[cur].moves[p] & 0xFFFF) == hash_move {
-                        self.pos.data[cur].moves[p] |= 0x7FFF0000;
+                while self.move_lists[cur][p] != 0 {
+                    if (self.move_lists[cur][p] & 0xFFFF) == hash_move {
+                        self.move_lists[cur][p] |= 0x7FFF0000;
                         break;
                     }
                     p += 1;
@@ -3446,7 +3499,7 @@ impl Engine {
                 }
             }
             self.pos.data[self.pos.cur].current = 0;
-            self.pos.data[self.pos.cur].moves[0] = 0;
+            self.move_lists[self.pos.cur][0] = 0;
             if depth <= 5 {
                 self.pos.data[self.pos.cur].gen_flags |= FLAG_NO_BC_SORT;
             }
@@ -3585,7 +3638,7 @@ impl Engine {
                     let start = self.pos.data[self.pos.cur].start;
                     let end = self.pos.data[self.pos.cur].current.saturating_sub(1);
                     for p in start..end {
-                        let mv = self.pos.data[self.pos.cur].moves[p];
+                        let mv = self.move_lists[self.pos.cur][p];
                         self.history_bad(mv, depth);
                     }
                 }
@@ -3644,7 +3697,7 @@ impl Engine {
             pext = 0;
             score = beta - 1;
             self.gen_evasions(me);
-            if self.pos.data[self.pos.cur].moves[0] == 0 {
+            if self.move_lists[self.pos.cur][0] == 0 {
                 return score;
             }
         } else {
@@ -3708,10 +3761,10 @@ impl Engine {
             cnt = 0;
             pext = 0;
             self.gen_evasions(me);
-            if self.pos.data[self.pos.cur].moves[0] == 0 {
+            if self.move_lists[self.pos.cur][0] == 0 {
                 return score;
             }
-            if self.pos.data[self.pos.cur].moves[1] == 0 {
+            if self.move_lists[self.pos.cur][1] == 0 {
                 pext = 2;
             }
             if hash_move != 0 && self.is_legal(me, hash_move) {
@@ -4044,10 +4097,10 @@ impl Engine {
             alpha = i32::max(height - MATE_VALUE, alpha);
             self.pos.data[self.pos.cur].mask = !0u64;
             self.gen_evasions(me);
-            if self.pos.data[self.pos.cur].moves[0] == 0 {
+            if self.move_lists[self.pos.cur][0] == 0 {
                 return height - MATE_VALUE;
             }
-            if self.pos.data[self.pos.cur].moves[1] == 0 {
+            if self.move_lists[self.pos.cur][1] == 0 {
                 pext = 2;
             }
         }
@@ -4155,7 +4208,7 @@ impl Engine {
                 }
             }
             self.pos.data[self.pos.cur].killer[0] = 0;
-            self.pos.data[self.pos.cur].moves[0] = 0;
+            self.move_lists[self.pos.cur][0] = 0;
             if root {
                 self.pos.data[self.pos.cur].current = 1;
             } else {

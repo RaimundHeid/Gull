@@ -12,6 +12,86 @@ use crate::types::*;
 
 pub const HASH_ENTRY_SIZE: usize = 16;
 
+pub struct Hashes(Vec<HashEntry>);
+
+impl Default for Hashes {
+    fn default() -> Self {
+        Hashes(Vec::new())
+    }
+}
+
+impl std::ops::Index<usize> for Hashes {
+    type Output = HashEntry;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &HashEntry {
+        debug_assert!(i < self.0.len());
+        unsafe { self.0.get_unchecked(i) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for Hashes {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut HashEntry {
+        debug_assert!(i < self.0.len());
+        unsafe { self.0.get_unchecked_mut(i) }
+    }
+}
+
+impl std::ops::Deref for Hashes {
+    type Target = [HashEntry];
+    #[inline(always)]
+    fn deref(&self) -> &[HashEntry] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Hashes {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [HashEntry] {
+        &mut self.0
+    }
+}
+
+pub struct PvHashes(Vec<PvEntry>);
+
+impl Default for PvHashes {
+    fn default() -> Self {
+        PvHashes(Vec::new())
+    }
+}
+
+impl std::ops::Index<usize> for PvHashes {
+    type Output = PvEntry;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &PvEntry {
+        debug_assert!(i < self.0.len());
+        unsafe { self.0.get_unchecked(i) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for PvHashes {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut PvEntry {
+        debug_assert!(i < self.0.len());
+        unsafe { self.0.get_unchecked_mut(i) }
+    }
+}
+
+impl std::ops::Deref for PvHashes {
+    type Target = [PvEntry];
+    #[inline(always)]
+    fn deref(&self) -> &[PvEntry] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for PvHashes {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [PvEntry] {
+        &mut self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HashEntry {
     pub key: u32,
@@ -82,16 +162,98 @@ impl Default for Settings {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bitboards(pub [u64; 16]);
+
+impl Default for Bitboards {
+    fn default() -> Self {
+        Bitboards([0; 16])
+    }
+}
+
+impl std::ops::Index<usize> for Bitboards {
+    type Output = u64;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &u64 {
+        debug_assert!(i < 16);
+        unsafe { self.0.get_unchecked(i) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for Bitboards {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut u64 {
+        debug_assert!(i < 16);
+        unsafe { self.0.get_unchecked_mut(i) }
+    }
+}
+
+impl std::ops::Deref for Bitboards {
+    type Target = [u64];
+    #[inline(always)]
+    fn deref(&self) -> &[u64] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Bitboards {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [u64] {
+        &mut self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Squares(pub [u8; 64]);
+
+impl Default for Squares {
+    fn default() -> Self {
+        Squares([0; 64])
+    }
+}
+
+impl std::ops::Index<usize> for Squares {
+    type Output = u8;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &u8 {
+        debug_assert!(i < 64);
+        unsafe { self.0.get_unchecked(i) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for Squares {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut u8 {
+        debug_assert!(i < 64);
+        unsafe { self.0.get_unchecked_mut(i) }
+    }
+}
+
+impl std::ops::Deref for Squares {
+    type Target = [u8];
+    #[inline(always)]
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Squares {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Board {
-    pub bb: [u64; 16],
-    pub square: [u8; 64],
+    pub bb: Bitboards,
+    pub square: Squares,
 }
 
 impl Default for Board {
     fn default() -> Self {
         Board {
-            bb: [0; 16],
-            square: [0; 64],
+            bb: Bitboards::default(),
+            square: Squares::default(),
         }
     }
 }
@@ -99,8 +261,8 @@ impl Default for Board {
 impl Board {
     #[inline(always)]
     pub fn clear(&mut self) {
-        self.bb = [0; 16];
-        self.square = [0; 64];
+        self.bb = Bitboards::default();
+        self.square = Squares::default();
     }
 
     #[inline(always)]
@@ -145,7 +307,6 @@ pub struct State {
     pub margin: i32,
     pub start: usize,
     pub current: usize,
-    pub moves: [i32; MAX_MOVES],
 }
 
 impl Default for State {
@@ -181,15 +342,95 @@ impl Default for State {
             margin: 0,
             start: 0,
             current: 0,
-            moves: [0; MAX_MOVES],
         }
     }
 }
 
+#[derive(Clone)]
+pub struct MoveLists([[i32; MAX_MOVES]; MAX_PLY]);
+
+impl Default for MoveLists {
+    fn default() -> Self {
+        MoveLists([[0; MAX_MOVES]; MAX_PLY])
+    }
+}
+
+impl std::ops::Index<usize> for MoveLists {
+    type Output = [i32; MAX_MOVES];
+    #[inline(always)]
+    fn index(&self, i: usize) -> &[i32; MAX_MOVES] {
+        debug_assert!(i < MAX_PLY);
+        unsafe { self.0.get_unchecked(i) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for MoveLists {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut [i32; MAX_MOVES] {
+        debug_assert!(i < MAX_PLY);
+        unsafe { self.0.get_unchecked_mut(i) }
+    }
+}
+
+impl std::ops::Deref for MoveLists {
+    type Target = [[i32; MAX_MOVES]];
+    #[inline(always)]
+    fn deref(&self) -> &[[i32; MAX_MOVES]] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for MoveLists {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [[i32; MAX_MOVES]] {
+        &mut self.0
+    }
+}
+
 #[derive(Clone, Debug)]
+pub struct Data([State; MAX_PLY]);
+
+impl Default for Data {
+    fn default() -> Self {
+        Data([State::default(); MAX_PLY])
+    }
+}
+
+impl std::ops::Index<usize> for Data {
+    type Output = State;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &State {
+        debug_assert!(i < MAX_PLY);
+        unsafe { self.0.get_unchecked(i) }
+    }
+}
+
+impl std::ops::IndexMut<usize> for Data {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut State {
+        debug_assert!(i < MAX_PLY);
+        unsafe { self.0.get_unchecked_mut(i) }
+    }
+}
+
+impl std::ops::Deref for Data {
+    type Target = [State];
+    #[inline(always)]
+    fn deref(&self) -> &[State] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Data {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [State] {
+        &mut self.0
+    }
+}
+
 pub struct Position {
     pub board: Board,
-    pub data: [State; MAX_PLY],
+    pub data: Data,
     pub cur: usize,
     pub stack: [u64; STACK_SIZE],
     pub sp: usize,
@@ -202,7 +443,7 @@ impl Default for Position {
     fn default() -> Self {
         Position {
             board: Board::default(),
-            data: [State::default(); MAX_PLY],
+            data: Data::default(),
             cur: 0,
             stack: [0; STACK_SIZE],
             sp: 0,
@@ -236,14 +477,15 @@ pub struct Engine {
     pub tables: &'static Tables,
     pub pos: Position,
     pub pawn_hash: Vec<PawnEntry>,
-    pub hash: Vec<HashEntry>,
-    pub pv_hash: Vec<PvEntry>,
+    pub hash: Hashes,
+    pub pv_hash: PvHashes,
     pub hash_mask: usize,
     pub pv_hash_mask: usize,
     pub history: [i16; 16 * 64],
     pub delta: [i16; 16 * 4096],
     pub reference: [Reference; 16 * 64],
     pub root_list: [i32; 256],
+    pub move_lists: MoveLists,
     pub multi_pv: [i32; 256],
     pub settings: Settings,
     pub shared: crate::search::SharedInfo,
@@ -284,14 +526,15 @@ impl Engine {
             tables: tables(),
             pos: Position::default(),
             pawn_hash: vec![PawnEntry::default(); PAWN_HASH_SIZE],
-            hash: vec![HashEntry::default(); entries],
-            pv_hash: vec![PvEntry::default(); PV_HASH_SIZE],
+            hash: Hashes::default(),
+            pv_hash: PvHashes::default(),
             hash_mask: entries - 4,
             pv_hash_mask: PV_HASH_MASK,
             history: [0; 16 * 64],
             delta: [0; 16 * 4096],
             reference: [Reference::default(); 16 * 64],
             root_list: [0; 256],
+            move_lists: MoveLists::default(),
             multi_pv: [0; 256],
             settings: Settings {
                 hash_size: bytes,
@@ -346,12 +589,12 @@ impl Engine {
         let entries = bytes / HASH_ENTRY_SIZE;
         debug_assert!(entries.is_power_of_two());
         if self.hash.len() != entries {
-            self.hash = vec![HashEntry::default(); entries];
+            self.hash = Hashes(vec![HashEntry::default(); entries]);
         }
         self.hash_mask = entries - 4;
         self.pv_hash_mask = PV_HASH_MASK;
         if self.pv_hash.len() != PV_HASH_SIZE {
-            self.pv_hash = vec![PvEntry::default(); PV_HASH_SIZE];
+            self.pv_hash = PvHashes(vec![PvEntry::default(); PV_HASH_SIZE]);
         }
         self.get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         self.last_time = 0;
@@ -894,6 +1137,7 @@ impl Engine {
     }
 
     /// `do_move<me>`
+    #[inline(always)]
     pub fn do_move(&mut self, me: Color, mv: Move) {
         let t = &self.tables;
         let cur_idx = self.pos.cur;
@@ -1103,6 +1347,7 @@ impl Engine {
     }
 
     /// `undo_move<me>`
+    #[inline(always)]
     pub fn undo_move(&mut self, me: Color, mv: Move) {
         let to = move_to(mv);
         let from = move_from(mv);
@@ -1155,6 +1400,7 @@ impl Engine {
     }
 
     /// `do_null()`
+    #[inline(always)]
     pub fn do_null(&mut self) {
         let t = &self.tables;
         let cur_idx = self.pos.cur;

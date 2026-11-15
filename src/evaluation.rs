@@ -142,6 +142,7 @@ pub fn evaluate(e: &mut Engine) {
 }
 
 impl Engine {
+    #[inline(always)]
     pub fn evaluate(&mut self) {
         let cur = self.pos.cur;
         let key = self.pos.data[cur].key;
@@ -324,6 +325,7 @@ impl Engine {
 
     // -- piece evaluation --------------------------------------------------
 
+    #[inline(always)]
     fn eval_queens(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let cur = self.pos.cur;
@@ -404,6 +406,7 @@ impl Engine {
         }
     }
 
+    #[inline(always)]
     fn eval_rooks(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let cur = self.pos.cur;
@@ -520,6 +523,7 @@ impl Engine {
         }
     }
 
+    #[inline(always)]
     fn eval_bishops(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let cur = self.pos.cur;
@@ -613,6 +617,7 @@ impl Engine {
         }
     }
 
+    #[inline(always)]
     fn eval_knights(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let cur = self.pos.cur;
@@ -670,6 +675,7 @@ impl Engine {
         }
     }
 
+    #[inline(always)]
     fn eval_king(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let oppc = opp(me);
@@ -697,6 +703,7 @@ impl Engine {
         incv(me, &mut ei.score, adjusted);
     }
 
+    #[inline(always)]
     fn eval_passer(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let cur = self.pos.cur;
@@ -807,6 +814,7 @@ impl Engine {
         }
     }
 
+    #[inline(always)]
     fn eval_pieces(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let cur = self.pos.cur;
@@ -861,6 +869,7 @@ impl Engine {
 
     // -- endgame scaling ---------------------------------------------------
 
+    #[inline(always)]
     fn eval_endgame(&mut self, me: Color, ei: &mut EvalInfo) {
         let t = self.tables;
         let cur = self.pos.cur;
