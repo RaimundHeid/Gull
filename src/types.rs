@@ -75,8 +75,10 @@ pub const FLAG_P_ROOK: i32 = 0xA000;
 pub const FLAG_P_QUEEN: i32 = 0xC000;
 
 pub const CAN_CASTLE_OO: u8 = 1;
+#[allow(non_upper_case_globals)]
 pub const CAN_CASTLE_oo: u8 = 2;
 pub const CAN_CASTLE_OOO: u8 = 4;
+#[allow(non_upper_case_globals)]
 pub const CAN_CASTLE_ooo: u8 = 8;
 
 pub const FLAG_UNUSUAL_MATERIAL: i32 = 1 << 30;

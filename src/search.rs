@@ -240,13 +240,11 @@ impl Engine {
     // -- evaluation / check helpers ----------------------------------------
 
     #[inline(always)]
-    #[inline(always)]
     pub fn check(&self, me: Color) -> bool {
         (self.pos.data[self.pos.cur].att[opp(me)] & self.king(me)) != 0
     }
 
     /// `IsIllegal(me, move)` from the C++ source.
-    #[inline]
     #[inline(always)]
     pub fn is_illegal(&self, me: Color, mv: Move) -> bool {
         let from = move_from(mv);
@@ -527,10 +525,6 @@ impl Engine {
     }
 
     #[inline(always)]
-    fn mvv_lva(&self, attacker: Piece, victim: Piece) -> i32 {
-        let _ = attacker;
-        self.tables.mvv_lva[attacker][victim]
-    }
 
     /// `gen_captures<me>`: returns the end index (exclusive of the 0
     /// terminator).
@@ -1280,7 +1274,7 @@ impl Engine {
             }
             let to = (from as i32 + Self::push(me)) as usize;
             if self.pos.board.square[to] == 0 && (bit(to) & t.p_att[oppc][king]) != 0 {
-                Self::add_move(&mut list, &mut n, (((from as i32) << 6) | to as i32));
+                Self::add_move(&mut list, &mut n, ((from as i32) << 6) | to as i32);
             }
         }
         let b_target = t.bishop_attacks(king, self.piece_all()) & clear;
@@ -1735,10 +1729,9 @@ impl Engine {
                 self.store_moves_list(cur, &list);
             }
             S_GOOD_CAP => {
-                let mut list = self.load_moves_list(cur);
                 self.pos.data[cur].mask = self.piece(opp(me));
                 let r = self.gen_captures(me);
-                list = self.load_moves_list(cur);
+                let mut list = self.load_moves_list(cur);
                 let mut p = 0usize;
                 let mut q = r as isize - 1;
                 while q >= p as isize {
@@ -1807,11 +1800,10 @@ impl Engine {
                 sort(0, r, &mut self.move_lists[cur]);
             }
             E_EV => {
-                let mut list = self.load_moves_list(cur);
                 self.pos.data[cur].mask = !0u64;
                 let r = self.gen_evasions(me);
                 self.mark_evasions();
-                list = self.load_moves_list(cur);
+                let mut list = self.load_moves_list(cur);
                 sort(0, r, &mut list);
                 self.store_moves_list(cur, &list);
                 self.pos.data[cur].current = 0;
@@ -1866,6 +1858,7 @@ impl Engine {
         }
     }
 
+    #[allow(unused_assignments)]
     pub fn gen_root_moves(&mut self, me: Color) {
         let mut depth = -256i32;
         let mut killer = 0i32;
@@ -2509,6 +2502,7 @@ impl Engine {
     }
 
     /// `pick_pv`: fill `pv[pv_ptr..]` from the hash tables.
+    #[allow(unused_assignments)]
     pub fn pick_pv(&mut self, pv: &mut [i32], pv_ptr: usize, pv_len: usize) {
         if pv_ptr >= pv_len.min(MAX_PV_LEN - 1) {
             pv[pv_ptr] = 0;
@@ -2747,19 +2741,16 @@ impl Engine {
 
 impl Engine {
     #[inline(always)]
-    #[inline(always)]
     pub fn score(&self) -> i32 {
         self.pos.data[self.pos.cur].score as i32
     }
 
-    #[inline(always)]
     #[inline(always)]
     fn delta_m(&self, mv: Move) -> i32 {
         let piece = self.pos.board.square[move_from(mv)] as usize;
         self.delta[(piece << 12) | (move_from(mv) << 6) | move_to(mv)] as i32
     }
 
-    #[inline(always)]
     #[inline(always)]
     fn ref_index(&self, mv: Move) -> usize {
         let to = move_to(mv);
@@ -2795,7 +2786,6 @@ impl Engine {
     }
 
     #[inline(always)]
-    #[inline(always)]
     fn history_inc(depth: i32) -> i32 {
         let d = depth >> 1;
         (d * d).min(64)
@@ -2808,7 +2798,7 @@ impl Engine {
         let inc = Self::history_inc(depth);
         let h = self.history[idx] as i32;
         self.history[idx] = if (h & 0x00FF) >= 256 - inc {
-            ((((h & 0xFEFE) >> 1) + ((inc << 8) | inc)) as i16)
+            (((h & 0xFEFE) >> 1) + ((inc << 8) | inc)) as i16
         } else {
             (h + ((inc << 8) | inc)) as i16
         };
@@ -2843,6 +2833,7 @@ impl Engine {
 // ---------------------------------------------------------------------------
 
 impl Engine {
+    #[allow(unused_assignments)]
     pub fn q_search(
         &mut self,
         me: Color,
@@ -2898,11 +2889,11 @@ impl Engine {
         let mut cut_move = 0;
         'q: {
             if hash_move != 0 {
-                let skip = ((bit(move_to(hash_move)) & self.pos.data[self.pos.cur].mask) == 0
+                let skip = (bit(move_to(hash_move)) & self.pos.data[self.pos.cur].mask) == 0
                     && (hash_move & 0xE000) == 0
                     && (depth < -8
                         || (self.score() + self.delta_m(hash_move) <= alpha
-                            && !self.is_check(me, hash_move))));
+                            && !self.is_check(me, hash_move)));
                 if !skip {
                     if self.is_legal(me, hash_move) {
                         if self.is_illegal(me, hash_move) {
@@ -2933,11 +2924,11 @@ impl Engine {
                                     }
                                 }
                             }
-                            if ((bit(move_to(hash_move)) & self.pos.data[self.pos.cur].mask) == 0
+                            if (bit(move_to(hash_move)) & self.pos.data[self.pos.cur].mask) == 0
                                 && (hash_move & 0xE000) == 0
                                 && (depth < -2 || (depth <= -1 && self.score() + 50 < alpha))
                                 && alpha >= beta - 1
-                                && !pv)
+                                && !pv
                             {
                                 return alpha;
                             }
@@ -3086,6 +3077,7 @@ impl Engine {
         score
     }
 
+    #[allow(unused_assignments)]
     pub fn q_evasion(
         &mut self,
         me: Color,
@@ -3215,6 +3207,7 @@ impl Engine {
 
 impl Engine {
     #[allow(clippy::too_many_lines)]
+    #[allow(unused_assignments)]
     pub fn search(&mut self, me: Color, exclusion: bool, beta: i32, depth: i32, flags: i32) -> i32 {
         let height = self.pos.cur as i32;
         self.check_for_stop();
@@ -3236,7 +3229,6 @@ impl Engine {
         let mut cnt = 0i32;
         let mut flag = 0i32;
         let mut singular = 0i32;
-        let mut played = 0i32;
         let mut score;
         let mut hash_move;
         let mut hash_value = -MATE_VALUE;
@@ -3250,7 +3242,6 @@ impl Engine {
             if exclusion {
                 cnt = 0;
                 singular = 0;
-                played = 0;
                 flag = 1;
                 score = beta - 1;
                 hash_move = flags & 0xFFFF;
@@ -3411,7 +3402,6 @@ impl Engine {
                 cnt = 0;
                 flag = 0;
                 singular = 0;
-                played = 0;
                 if hash_move != 0 && self.is_legal(me, hash_move) {
                     if self.is_illegal(me, hash_move) {
                         // skip
@@ -3453,7 +3443,6 @@ impl Engine {
                         }
                         let value = -self.search(opp(me), false, 1 - beta, new_depth, f);
                         self.undo_move(me, hash_move);
-                        played += 1;
                         if value > score {
                             score = value;
                             if value >= beta {
@@ -3526,7 +3515,7 @@ impl Engine {
                 } else {
                     self.is_check(me, mv)
                 };
-                let mut ext = if check && self.see(me, mv, 0) {
+                let ext = if check && self.see(me, mv, 0) {
                     1 + i32::from(depth < 16)
                 } else {
                     self.extension(false, mv, depth)
@@ -3606,7 +3595,6 @@ impl Engine {
                     value
                 };
                 self.undo_move(me, mv);
-                played += 1;
                 if value > score {
                     score = value;
                     if value >= beta {
@@ -3661,6 +3649,7 @@ impl Engine {
 
 impl Engine {
     #[allow(clippy::too_many_lines)]
+    #[allow(unused_assignments)]
     pub fn search_evasion(
         &mut self,
         me: Color,
@@ -3849,7 +3838,7 @@ impl Engine {
                     continue;
                 }
                 let check = self.is_check(me, mv);
-                let mut ext = if check {
+                let ext = if check {
                     i32::max(pext, 1 + i32::from(depth < 16))
                 } else {
                     i32::max(pext, self.extension(false, mv, depth))
@@ -3933,6 +3922,7 @@ impl Engine {}
 
 impl Engine {
     #[allow(clippy::too_many_lines)]
+    #[allow(unused_assignments)]
     pub fn pv_search(
         &mut self,
         me: Color,
@@ -4492,6 +4482,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[allow(unused_assignments)]
     pub fn root_color(&mut self, me: Color) {
         let mut start_depth = 2i32;
         let mut hash_depth = 0i32;

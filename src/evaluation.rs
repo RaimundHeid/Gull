@@ -338,7 +338,7 @@ impl Engine {
             let att = t.queen_attacks(sq, ei.occ);
             self.pos.data[cur].att[me] |= att;
             if (t.q_mask[sq] & self.king(oppc)) != 0 {
-                let mut v = t.between[king_sq(ei, oppc)][sq] & ei.occ;
+                let v = t.between[king_sq(ei, oppc)][sq] & ei.occ;
                 if v != 0 {
                     if single(v) {
                         self.pos.data[cur].xray[me] |= v;
@@ -419,7 +419,7 @@ impl Engine {
             let att = t.rook_attacks(sq, ei.occ);
             self.pos.data[cur].att[me] |= att;
             if (t.r_mask[sq] & self.king(oppc)) != 0 {
-                let mut v = t.between[king_sq(ei, oppc)][sq] & ei.occ;
+                let v = t.between[king_sq(ei, oppc)][sq] & ei.occ;
                 if v != 0 {
                     if single(v) {
                         self.pos.data[cur].xray[me] |= v;
@@ -536,7 +536,7 @@ impl Engine {
             let att = t.bishop_attacks(sq, ei.occ);
             self.pos.data[cur].att[me] |= att;
             if (t.b_mask[sq] & self.king(oppc)) != 0 {
-                let mut v = t.between[king_sq(ei, oppc)][sq] & ei.occ;
+                let v = t.between[king_sq(ei, oppc)][sq] & ei.occ;
                 if v != 0 {
                     if single(v) {
                         self.pos.data[cur].xray[me] |= v;
@@ -1473,8 +1473,8 @@ impl Engine {
         let cur = self.pos.cur;
         let oppc = opp(me);
         let sq = lsb(self.pawn(me));
-        if ((self.pos.board.bb[ilight(me)] != 0 && self.pos.board.bb[idark(oppc)] != 0)
-            || (self.pos.board.bb[idark(me)] != 0 && self.pos.board.bb[ilight(oppc)] != 0))
+        if (self.pos.board.bb[ilight(me)] != 0 && self.pos.board.bb[idark(oppc)] != 0)
+            || (self.pos.board.bb[idark(me)] != 0 && self.pos.board.bb[ilight(oppc)] != 0)
         {
             if crank(me, sq) <= 4 {
                 return 0;
@@ -1884,7 +1884,6 @@ fn _unused(ei: &EvalInfo) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::position::Engine;
 
     #[test]

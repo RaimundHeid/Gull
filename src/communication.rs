@@ -189,7 +189,7 @@ fn set_position(engine: &mut Engine, tokens: &[&str]) -> bool {
     if tokens.is_empty() {
         return false;
     }
-    let mut i = 0;
+    let mut i;
     match tokens[0] {
         "startpos" => {
             engine.get_board(START_FEN);
