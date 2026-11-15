@@ -104,14 +104,17 @@ pub fn run() {
             "go" => {
                 stop_and_join(&mut running, &mut engine);
                 let limits = parse_go(&tokens[1..]);
-                let mut moved = engine.take().unwrap();
+                let mut moved = Box::new(engine.take().unwrap());
                 moved.control.reset();
                 let control = moved.control.clone();
-                let handle = thread::spawn(move || {
-                    let result = moved.go(&limits);
-                    print_bestmove(&result);
-                    (moved, result)
-                });
+                let handle = thread::Builder::new()
+                    .stack_size(32 * 1024 * 1024)
+                    .spawn(move || {
+                        let result = moved.go(&limits);
+                        print_bestmove(&result);
+                        (*moved, result)
+                    })
+                    .expect("spawn search thread");
                 running = Some(Running { handle, control });
             }
             "stop" => {

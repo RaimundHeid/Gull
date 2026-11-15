@@ -838,8 +838,9 @@ impl Engine {
             return n;
         }
         if (bit(att_sq) & st.mask) != 0 {
-            if st.ep_square != 0 && st.ep_square as i32 == att_sq as i32 + Self::push(me) {
-                let mut v = t.p_att[oppc][att_sq + Self::push(me) as usize] & self.pawn(me);
+            let ep_sq = att_sq as i32 + Self::push(me);
+            if st.ep_square != 0 && st.ep_square as i32 == ep_sq {
+                let mut v = t.p_att[oppc][ep_sq as usize] & self.pawn(me);
                 while v != 0 {
                     let from = lsb(v);
                     cut(&mut v);
@@ -847,7 +848,7 @@ impl Engine {
                         &mut list,
                         &mut n,
                         from,
-                        (att_sq as i32 + Self::push(me)) as usize,
+                        ep_sq as usize,
                         FLAG_EP,
                         t.mvv_lva[ipawn(me)][ipawn(oppc)],
                     );
