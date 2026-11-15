@@ -1139,6 +1139,15 @@ impl Engine {
     /// `do_move<me>`
     #[inline(always)]
     pub fn do_move(&mut self, me: Color, mv: Move) {
+        if me == WHITE {
+            self.do_move_c::<true>(mv);
+        } else {
+            self.do_move_c::<false>(mv);
+        }
+    }
+
+    fn do_move_c<const ME: bool>(&mut self, mv: Move) {
+        let me: Color = if ME { WHITE } else { BLACK };
         let t = &self.tables;
         let cur_idx = self.pos.cur;
         let current = self.pos.data[cur_idx];
@@ -1349,6 +1358,15 @@ impl Engine {
     /// `undo_move<me>`
     #[inline(always)]
     pub fn undo_move(&mut self, me: Color, mv: Move) {
+        if me == WHITE {
+            self.undo_move_c::<true>(mv);
+        } else {
+            self.undo_move_c::<false>(mv);
+        }
+    }
+
+    fn undo_move_c<const ME: bool>(&mut self, mv: Move) {
+        let me: Color = if ME { WHITE } else { BLACK };
         let to = move_to(mv);
         let from = move_from(mv);
         let cur = self.pos.data[self.pos.cur];

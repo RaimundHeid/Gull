@@ -532,7 +532,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = [0i32; MAX_MOVES];
+        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let mask = st.mask;
@@ -545,7 +545,7 @@ impl Engine {
                 let from = lsb(vv);
                 cut(&mut vv);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     st.ep_square as usize,
@@ -561,7 +561,7 @@ impl Engine {
             let to = (from as i32 + Self::push(me)) as usize;
             if self.pos.board.square[to] == 0 {
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -570,7 +570,7 @@ impl Engine {
                 );
                 if (t.n_att[lsb(self.king(oppc))] & bit(to)) != 0 {
                     Self::add_move_score(
-                        &mut list,
+                        list,
                         &mut n,
                         from,
                         to,
@@ -587,10 +587,10 @@ impl Engine {
             let to = (from as i32 + Self::push_e(me)) as usize;
             let cap = self.pos.board.square[to] as usize;
             let score = t.mvv_lva[promotion_capture_piece(cap)][BLACK_QUEEN];
-            Self::add_move_score(&mut list, &mut n, from, to, FLAG_P_QUEEN, score);
+            Self::add_move_score(list, &mut n, from, to, FLAG_P_QUEEN, score);
             if (t.n_att[lsb(self.king(oppc))] & bit(to)) != 0 {
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -606,10 +606,10 @@ impl Engine {
             let to = (from as i32 + Self::push_w(me)) as usize;
             let cap = self.pos.board.square[to] as usize;
             let score = t.mvv_lva[promotion_capture_piece(cap)][BLACK_QUEEN];
-            Self::add_move_score(&mut list, &mut n, from, to, FLAG_P_QUEEN, score);
+            Self::add_move_score(list, &mut n, from, to, FLAG_P_QUEEN, score);
             if (t.n_att[lsb(self.king(oppc))] & bit(to)) != 0 {
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -620,7 +620,6 @@ impl Engine {
         }
         if (st.att[me] & mask) == 0 {
             list[n] = 0;
-            self.store_moves(cur, &list, n);
             return n;
         }
         v = Self::shift_w(oppc, mask) & self.pawn(me) & !self.line(me, 6);
@@ -628,7 +627,7 @@ impl Engine {
             let from = lsb(v);
             cut(&mut v);
             Self::add_move_score(
-                &mut list,
+                list,
                 &mut n,
                 from,
                 (from as i32 + Self::push_e(me)) as usize,
@@ -642,7 +641,7 @@ impl Engine {
             let from = lsb(v);
             cut(&mut v);
             Self::add_move_score(
-                &mut list,
+                list,
                 &mut n,
                 from,
                 (from as i32 + Self::push_w(me)) as usize,
@@ -656,7 +655,7 @@ impl Engine {
             let to = lsb(v);
             cut(&mut v);
             Self::add_move_score(
-                &mut list,
+                list,
                 &mut n,
                 lsb(self.king(me)),
                 to,
@@ -673,7 +672,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -691,7 +690,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -710,7 +709,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -728,7 +727,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -738,7 +737,6 @@ impl Engine {
             }
         }
         list[n] = 0;
-        self.store_moves(cur, &list, n);
         n
     }
 
@@ -747,7 +745,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = [0i32; MAX_MOVES];
+        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let king = lsb(self.king(me));
@@ -807,7 +805,6 @@ impl Engine {
             }
             eprintln!("{}", std::backtrace::Backtrace::force_capture());
             list[n] = 0;
-            self.store_moves(cur, &list, n);
             return n;
         }
         let mut att_sq = lsb(att);
@@ -825,7 +822,7 @@ impl Engine {
                 let to = lsb(esc);
                 cut(&mut esc);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     king,
                     to,
@@ -834,7 +831,6 @@ impl Engine {
                 );
             }
             list[n] = 0;
-            self.store_moves(cur, &list, n);
             return n;
         }
         if (bit(att_sq) & st.mask) != 0 {
@@ -845,7 +841,7 @@ impl Engine {
                     let from = lsb(v);
                     cut(&mut v);
                     Self::add_move_score(
-                        &mut list,
+                        list,
                         &mut n,
                         from,
                         ep_sq as usize,
@@ -861,7 +857,7 @@ impl Engine {
             cut(&mut v);
             if (bit(att_sq) & self.line(me, 7)) != 0 {
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     att_sq,
@@ -871,7 +867,7 @@ impl Engine {
                 );
             } else if (bit(att_sq) & st.mask) != 0 {
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     att_sq,
@@ -884,7 +880,7 @@ impl Engine {
             let to = lsb(esc);
             cut(&mut esc);
             Self::add_move_score(
-                &mut list,
+                list,
                 &mut n,
                 king,
                 to,
@@ -899,7 +895,7 @@ impl Engine {
             cut(&mut v);
             if (bit(from) & self.line(me, 6)) != 0 {
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     (from as i32 + Self::push(me)) as usize,
@@ -909,7 +905,7 @@ impl Engine {
             } else if st.mask == !0u64 {
                 // F(~Current->mask) when mask == Filled
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     (from as i32 + Self::push(me)) as usize,
@@ -926,7 +922,7 @@ impl Engine {
                 cut(&mut v);
                 if self.pos.board.square[(from as i32 + Self::push(me)) as usize] == 0 {
                     Self::add_move(
-                        &mut list,
+                        list,
                         &mut n,
                         ((from as i32) << 6) | (from as i32 + 2 * Self::push(me)),
                     );
@@ -944,7 +940,7 @@ impl Engine {
                 e ^= bit(to);
                 if (bit(to) & st.mask) != 0 {
                     Self::add_move_score(
-                        &mut list,
+                        list,
                         &mut n,
                         from,
                         to,
@@ -964,7 +960,7 @@ impl Engine {
                 e ^= bit(to);
                 if (bit(to) & st.mask) != 0 {
                     Self::add_move_score(
-                        &mut list,
+                        list,
                         &mut n,
                         from,
                         to,
@@ -985,7 +981,7 @@ impl Engine {
                 e ^= bit(to);
                 if (bit(to) & st.mask) != 0 {
                     Self::add_move_score(
-                        &mut list,
+                        list,
                         &mut n,
                         from,
                         to,
@@ -1005,7 +1001,7 @@ impl Engine {
                 e ^= bit(to);
                 if (bit(to) & st.mask) != 0 {
                     Self::add_move_score(
-                        &mut list,
+                        list,
                         &mut n,
                         from,
                         to,
@@ -1016,14 +1012,13 @@ impl Engine {
             }
         }
         list[n] = 0;
-        self.store_moves(cur, &list, n);
         n
     }
 
     pub fn mark_evasions(&mut self) {
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = self.load_moves_list(cur);
+        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut i = 0;
         while list[i] != 0 {
             let mv = list[i] & 0xFFFF;
@@ -1042,17 +1037,14 @@ impl Engine {
             }
             i += 1;
         }
-        self.store_moves_list(cur, &list);
-    }
+            }
 
     /// `gen_quiet_moves<me>`
     pub fn gen_quiet_moves(&mut self, me: Color, start: usize) -> usize {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = [0i32; MAX_MOVES];
-        let start_prefix = start;
-        list[..start_prefix].copy_from_slice(&self.move_lists[cur][..start_prefix]);
+        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = start;
         let occ = self.piece_all();
         let free = !occ;
@@ -1062,14 +1054,14 @@ impl Engine {
                 && (st.att[BLACK] & 0x70) == 0
             {
                 let score = self.history_p(iking(WHITE), ((4 << 6) | 6 | FLAG_CASTLING) as i32);
-                Self::add_move_score(&mut list, &mut n, 4, 6, FLAG_CASTLING, score);
+                Self::add_move_score(list, &mut n, 4, 6, FLAG_CASTLING, score);
             }
             if (st.castle_flags & CAN_CASTLE_OOO) != 0
                 && (occ & 0xE) == 0
                 && (st.att[BLACK] & 0x1C) == 0
             {
                 let score = self.history_p(iking(WHITE), ((4 << 6) | 2 | FLAG_CASTLING) as i32);
-                Self::add_move_score(&mut list, &mut n, 4, 2, FLAG_CASTLING, score);
+                Self::add_move_score(list, &mut n, 4, 2, FLAG_CASTLING, score);
             }
         } else {
             if (st.castle_flags & CAN_CASTLE_oo) != 0
@@ -1077,14 +1069,14 @@ impl Engine {
                 && (st.att[WHITE] & 0x7000_0000_0000_0000) == 0
             {
                 let score = self.history_p(iking(BLACK), ((60 << 6) | 62 | FLAG_CASTLING) as i32);
-                Self::add_move_score(&mut list, &mut n, 60, 62, FLAG_CASTLING, score);
+                Self::add_move_score(list, &mut n, 60, 62, FLAG_CASTLING, score);
             }
             if (st.castle_flags & CAN_CASTLE_ooo) != 0
                 && (occ & 0x0E00_0000_0000_0000) == 0
                 && (st.att[WHITE] & 0x1C00_0000_0000_0000) == 0
             {
                 let score = self.history_p(iking(BLACK), ((60 << 6) | 58 | FLAG_CASTLING) as i32);
-                Self::add_move_score(&mut list, &mut n, 60, 58, FLAG_CASTLING, score);
+                Self::add_move_score(list, &mut n, 60, 58, FLAG_CASTLING, score);
             }
         }
         let mut v = Self::shift(me, self.pawn(me)) & free & !self.line(me, 7);
@@ -1098,11 +1090,11 @@ impl Engine {
                 let final_to = (to as i32 + Self::push(me)) as usize;
                 let score =
                     self.history_p(ipawn(me), (((from as i32) << 6) | final_to as i32) as i32);
-                Self::add_move_score(&mut list, &mut n, from, final_to, 0, score);
+                Self::add_move_score(list, &mut n, from, final_to, 0, score);
             }
             let from = (to as i32 - Self::push(me)) as usize;
             let score = self.history_p(ipawn(me), (((from as i32) << 6) | to as i32) as i32);
-            Self::add_move_score(&mut list, &mut n, from, to, 0, score);
+            Self::add_move_score(list, &mut n, from, to, 0, score);
         }
         let mut u = self.knight(me);
         while u != 0 {
@@ -1113,7 +1105,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 let score = self.history_p(iknight(me), (((from as i32) << 6) | to as i32) as i32);
-                Self::add_move_score(&mut list, &mut n, from, to, 0, score);
+                Self::add_move_score(list, &mut n, from, to, 0, score);
             }
         }
         let mut u = self.bishop(me);
@@ -1128,7 +1120,7 @@ impl Engine {
                     self.pos.board.square[from] as usize,
                     (((from as i32) << 6) | to as i32) as i32,
                 );
-                Self::add_move_score(&mut list, &mut n, from, to, 0, score);
+                Self::add_move_score(list, &mut n, from, to, 0, score);
             }
         }
         let mut u = self.rook(me);
@@ -1140,7 +1132,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 let score = self.history_p(irook(me), (((from as i32) << 6) | to as i32) as i32);
-                Self::add_move_score(&mut list, &mut n, from, to, 0, score);
+                Self::add_move_score(list, &mut n, from, to, 0, score);
             }
         }
         let mut u = self.queen(me);
@@ -1152,7 +1144,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 let score = self.history_p(iqueen(me), (((from as i32) << 6) | to as i32) as i32);
-                Self::add_move_score(&mut list, &mut n, from, to, 0, score);
+                Self::add_move_score(list, &mut n, from, to, 0, score);
             }
         }
         let mut v = t.s_area[lsb(self.king(me))] & free & !st.att[opp(me)];
@@ -1161,10 +1153,9 @@ impl Engine {
             cut(&mut v);
             let from = lsb(self.king(me));
             let score = self.history_p(iking(me), (((from as i32) << 6) | to as i32) as i32);
-            Self::add_move_score(&mut list, &mut n, from, to, 0, score);
+            Self::add_move_score(list, &mut n, from, to, 0, score);
         }
         list[n] = 0;
-        self.store_moves(cur, &list, n);
         n
     }
 
@@ -1173,7 +1164,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = [0i32; MAX_MOVES];
+        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let clear = !(self.piece(me) | st.mask);
@@ -1188,7 +1179,7 @@ impl Engine {
                     let to = (from as i32 + Self::push(me)) as usize;
                     if (bit(to) & target) != 0 && self.pos.board.square[to] == 0 {
                         Self::add_move_score(
-                            &mut list,
+                            list,
                             &mut n,
                             from,
                             to,
@@ -1201,7 +1192,7 @@ impl Engine {
                         let to = lsb(v);
                         cut(&mut v);
                         Self::add_move_score(
-                            &mut list,
+                            list,
                             &mut n,
                             from,
                             to,
@@ -1227,7 +1218,7 @@ impl Engine {
                     let to = lsb(v);
                     cut(&mut v);
                     Self::add_move_score(
-                        &mut list,
+                        list,
                         &mut n,
                         from,
                         to,
@@ -1247,7 +1238,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -1265,7 +1256,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -1275,7 +1266,7 @@ impl Engine {
             }
             let to = (from as i32 + Self::push(me)) as usize;
             if self.pos.board.square[to] == 0 && (bit(to) & t.p_att[oppc][king]) != 0 {
-                Self::add_move(&mut list, &mut n, ((from as i32) << 6) | to as i32);
+                Self::add_move(list, &mut n, ((from as i32) << 6) | to as i32);
             }
         }
         let b_target = t.bishop_attacks(king, self.piece_all()) & clear;
@@ -1294,7 +1285,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -1313,7 +1304,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -1331,7 +1322,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_move_score(
-                    &mut list,
+                    list,
                     &mut n,
                     from,
                     to,
@@ -1341,7 +1332,6 @@ impl Engine {
             }
         }
         list[n] = 0;
-        self.store_moves(cur, &list, n);
         n
     }
 
@@ -1350,7 +1340,7 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let mut list = [0i32; MAX_MOVES];
+        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let occ = self.piece_all();
@@ -1361,7 +1351,7 @@ impl Engine {
                 && (st.att[BLACK] & 0x70) == 0
             {
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     iking(WHITE),
@@ -1376,7 +1366,7 @@ impl Engine {
                 && (st.att[BLACK] & 0x1C) == 0
             {
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     iking(WHITE),
@@ -1392,7 +1382,7 @@ impl Engine {
                 && (st.att[WHITE] & 0x7000_0000_0000_0000) == 0
             {
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     iking(BLACK),
@@ -1407,7 +1397,7 @@ impl Engine {
                 && (st.att[WHITE] & 0x1C00_0000_0000_0000) == 0
             {
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     iking(BLACK),
@@ -1427,7 +1417,7 @@ impl Engine {
             {
                 let from = (to as i32 - Self::push(me)) as usize;
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     ipawn(me),
@@ -1439,7 +1429,7 @@ impl Engine {
             }
             let from = (to as i32 - Self::push(me)) as usize;
             Self::add_delta(
-                &mut list,
+                list,
                 &mut n,
                 &self.delta,
                 ipawn(me),
@@ -1458,7 +1448,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     iknight(me),
@@ -1478,7 +1468,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     self.pos.board.square[from] as usize,
@@ -1498,7 +1488,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     irook(me),
@@ -1518,7 +1508,7 @@ impl Engine {
                 let to = lsb(v);
                 cut(&mut v);
                 Self::add_delta(
-                    &mut list,
+                    list,
                     &mut n,
                     &self.delta,
                     iqueen(me),
@@ -1535,7 +1525,7 @@ impl Engine {
             cut(&mut v);
             let from = lsb(self.king(me));
             Self::add_delta(
-                &mut list,
+                list,
                 &mut n,
                 &self.delta,
                 iking(me),
@@ -1546,7 +1536,6 @@ impl Engine {
             );
         }
         list[n] = 0;
-        self.store_moves(cur, &list, n);
         n
     }
 
@@ -1581,17 +1570,6 @@ impl Engine {
 
     /// Generate all legal moves for `me` (helper used by UCI and tests; the
     /// search itself uses the staged generators above).
-    #[inline(always)]
-    fn store_moves(&mut self, cur: usize, list: &[i32; MAX_MOVES], n: usize) {
-        self.move_lists[cur][..=n].copy_from_slice(&list[..=n]);
-    }
-
-    #[inline(always)]
-    fn store_moves_list(&mut self, cur: usize, list: &[i32; MAX_MOVES]) {
-        let n = list.iter().position(|&m| m == 0).unwrap_or(MAX_MOVES - 1);
-        self.move_lists[cur][..=n].copy_from_slice(&list[..=n]);
-    }
-
     #[inline(always)]
     fn load_moves_list(&self, cur: usize) -> [i32; MAX_MOVES] {
         let mut list = [0i32; MAX_MOVES];
@@ -1722,17 +1700,17 @@ impl Engine {
         let mut st = self.pos.data[cur];
         st.gen_flags &= !FLAG_SORT;
         self.pos.data[cur] = st;
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES)
+        };
         match st.stage {
             S_HASH_MOVE | R_HASH_MOVE | E_HASH_MOVE => {
-                let mut list = self.load_moves_list(cur);
                 list[0] = st.killer[0] as i32;
                 list[1] = 0;
-                self.store_moves_list(cur, &list);
             }
             S_GOOD_CAP => {
                 self.pos.data[cur].mask = self.piece(opp(me));
                 let r = self.gen_captures(me);
-                let mut list = self.load_moves_list(cur);
                 let mut p = 0usize;
                 let mut q = r as isize - 1;
                 while q >= p as isize {
@@ -1746,14 +1724,12 @@ impl Engine {
                         q -= 1;
                     }
                 }
-                self.store_moves_list(cur, &list);
                 self.pos.data[cur].start = p;
                 self.pos.data[cur].current = p;
                 sort(p, r, &mut self.move_lists[cur]);
             }
             S_SPECIAL => {
                 self.pos.data[cur].current = st.start;
-                let mut list = self.load_moves_list(cur);
                 let mut p = st.start;
                 if st.killer[1] != 0 {
                     list[p] = st.killer[1] as i32;
@@ -1772,7 +1748,6 @@ impl Engine {
                     p += 1;
                 }
                 list[p] = 0;
-                self.store_moves_list(cur, &list);
             }
             S_QUIET => {
                 let start = st.start;
@@ -1782,9 +1757,7 @@ impl Engine {
             }
             S_BAD_CAP => {
                 let start = st.start;
-                let mut list = self.load_moves_list(cur);
                 list[start] = 0;
-                self.store_moves_list(cur, &list);
                 self.pos.data[cur].current = 0;
                 if (st.gen_flags & FLAG_NO_BC_SORT) == 0 {
                     sort(0, start, &mut self.move_lists[cur]);
@@ -1804,9 +1777,7 @@ impl Engine {
                 self.pos.data[cur].mask = !0u64;
                 let r = self.gen_evasions(me);
                 self.mark_evasions();
-                let mut list = self.load_moves_list(cur);
-                sort(0, r, &mut list);
-                self.store_moves_list(cur, &list);
+                sort(0, r, list);
                 self.pos.data[cur].current = 0;
             }
             _ => {}
@@ -1823,26 +1794,26 @@ impl Engine {
         }
         loop {
             let cur = self.pos.cur;
-            let st = self.pos.data[cur];
-            let idx = st.current;
+            let idx = self.pos.data[cur].current;
             if self.move_lists[cur][idx] == 0 {
-                let stage = st.stage + 1;
-                self.pos.data[self.pos.cur].stage = stage;
+                let stage = self.pos.data[cur].stage + 1;
+                self.pos.data[cur].stage = stage;
                 if ((1u32 << stage) & STAGE_NONE) != 0 {
                     return 0;
                 }
                 self.gen_next_moves(me);
                 continue;
             }
-            let move_val = if (st.gen_flags & FLAG_SORT) != 0 {
+            let move_val = if (self.pos.data[cur].gen_flags & FLAG_SORT) != 0 {
                 self.pick_move()
             } else {
                 let mv = self.move_lists[cur][idx] & 0xFFFF;
-                self.pos.data[self.pos.cur].current = idx + 1;
+                self.pos.data[cur].current = idx + 1;
                 mv
             };
-            let st = self.pos.data[cur];
-            if st.stage == S_QUIET {
+            let stage = self.pos.data[cur].stage;
+            if stage == S_QUIET {
+                let st = &self.pos.data[cur];
                 if move_val == st.killer[1] as i32
                     || move_val == st.killer[2] as i32
                     || move_val == st.refs[0] as i32
@@ -1850,7 +1821,7 @@ impl Engine {
                 {
                     continue;
                 }
-            } else if st.stage == S_SPECIAL
+            } else if stage == S_SPECIAL
                 && (self.pos.board.square[move_to(move_val)] != 0 || !self.is_legal(me, move_val))
             {
                 continue;
@@ -2387,7 +2358,11 @@ impl Engine {
 
     /// `check_for_stop`: raise a `SearchAborted` unwind when a stop was
     /// requested externally or a hard limit has been reached.
-    #[inline]
+    #[cold]
+    fn abort_search() -> ! {
+        resume_unwind(Box::new(SearchAborted));
+    }
+
     pub fn check_for_stop(&mut self) {
         // Polling on every node is expensive.  A 1024-node interval is still
         // well under a millisecond at current search speeds, so `stop` remains
@@ -2396,14 +2371,14 @@ impl Engine {
             return;
         }
         if self.control.is_stopped() {
-            resume_unwind(Box::new(SearchAborted));
+            Self::abort_search();
         }
         if self.shared.node_limit != 0 && self.pos.nodes >= self.shared.node_limit {
-            resume_unwind(Box::new(SearchAborted));
+            Self::abort_search();
         }
         let hard = self.shared.hard_time_limit;
         if hard != INFINITE_TIME && now_ms() >= self.shared.start_time.saturating_add(hard) {
-            resume_unwind(Box::new(SearchAborted));
+            Self::abort_search();
         }
     }
 
