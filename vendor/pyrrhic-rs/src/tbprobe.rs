@@ -1392,13 +1392,14 @@ pub(crate) unsafe fn tb_init(path: &str) -> bool {
 
     strcpy(pathString, cpath.as_ptr());
     numPaths = 0;
+    let path_separator = if cfg!(windows) { ';' } else { ':' } as i8;
     let mut i_1: i32 = 0;
     loop {
-        if *pathString.offset(i_1 as isize) as i32 != ':' as i32 {
+        if *pathString.offset(i_1 as isize) as i32 != path_separator as i32 {
             numPaths += 1;
         }
         while *pathString.offset(i_1 as isize) as i32 != 0
-            && *pathString.offset(i_1 as isize) as i32 != ':' as i32
+            && *pathString.offset(i_1 as isize) as i32 != path_separator as i32
         {
             i_1 += 1;
         }

@@ -1,5 +1,4 @@
 [build]
-rustc-wrapper = ".cargo/rustc-wrapper.sh"
 rustflags = ["-C", "target-cpu=native"]
 
 [source.crates-io]

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Generate pgo/gull.profdata.  Once present, `cargo build --release` uses it
-# automatically through .cargo/rustc-wrapper.sh.
+# Generate pgo/gull.profdata and rebuild with it.  PGO is optional; a normal
+# `cargo build --release` does not depend on a generated profile.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -10,8 +10,8 @@ profdir="$root/target/pgo-data"
 rm -rf "$profdir"
 mkdir -p "$profdir" "$root/pgo"
 
-# Do not let an existing profile influence the instrumented build.
-GULL_PGO_GENERATE=1 RUSTFLAGS="-C target-cpu=native -C profile-generate=$profdir" \
+# Build an instrumented binary without using any old profile.
+RUSTFLAGS="-C target-cpu=native -C profile-generate=$profdir" \
     cargo build --release
 
 # Representative searches covering the opening, middlegame, tactics and
@@ -42,5 +42,6 @@ fi
 
 # Force a rebuild so the newly generated profile is consumed.
 touch src/lib.rs
-cargo build --release
+RUSTFLAGS="-C target-cpu=native -C profile-use=$root/pgo/gull.profdata" \
+    cargo build --release
 echo "PGO profile written to pgo/gull.profdata"

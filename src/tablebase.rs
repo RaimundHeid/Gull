@@ -71,7 +71,8 @@ pub fn load(path: &str) -> Result<Option<(Arc<GullTableBases>, usize)>, String> 
 
 fn path_max_pieces(path: &str) -> Option<usize> {
     let mut max_pieces = 0;
-    for part in path.split(':') {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    for part in path.split(separator) {
         let p = std::path::Path::new(part);
         let mut consider = |file: &std::path::Path| {
             if !matches!(

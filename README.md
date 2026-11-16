@@ -84,17 +84,31 @@ The test suite includes:
 
 ## Profile-guided optimization
 
-If `pgo/gull.profdata` exists, `cargo build --release` automatically applies it
-through the local rustc wrapper (`.cargo/rustc-wrapper.sh`).  Generate it with:
+PGO is optional and is not applied automatically.  On a POSIX host, generate a
+local profile with:
 
 ```sh
 ./scripts/build-pgo.sh
 ```
 
-The script builds an instrumented binary, runs a few representative searches,
-merges the profile into `pgo/gull.profdata`, and rebuilds in release mode.
-Delete `pgo/gull.profdata` (or run `cargo clean`) to return to the normal
-release build.  The profile is intentionally not committed.
+The script builds an instrumented binary, runs representative searches, merges
+the profile into `pgo/gull.profdata`, and rebuilds with `-Cprofile-use`.
+Equivalent manual invocation:
+
+```sh
+RUSTFLAGS="-C target-cpu=native -C profile-use=pgo/gull.profdata" \
+    cargo build --release
+```
+
+The profile is platform-specific and intentionally not committed.  A normal
+`cargo build --release` does not require it.
+
+## Portability
+
+The crate is Rust-only and builds on Linux, macOS and Windows.  Dependencies
+are vendored pure-Rust crates, so no C/C++ compiler is required.  Syzygy paths
+are separated with `:` on Unix and `;` on Windows.  The optional PGO helper is a
+POSIX shell script; Windows builds use the normal release profile.
 
 ## FEN/move conventions
 
