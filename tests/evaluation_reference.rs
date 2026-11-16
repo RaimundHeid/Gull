@@ -1,5 +1,5 @@
-//! Exactness tests for the evaluation function against values produced by the
-//! C++ reference implementation (`reference/eval_dump`).
+//! Exactness tests for the evaluation function against captured reference
+//! values.
 
 use gull::position::Engine;
 use gull::tables::PAWN_HASH_MASK;

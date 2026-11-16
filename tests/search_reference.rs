@@ -1,5 +1,4 @@
-//! Exactness tests for the search against the C++ reference
-//! (`./src/LazyGull bench <depth> <fen>`).
+//! Exactness tests for the search against the captured reference fixtures.
 
 use gull::position::Engine;
 use gull::search::{NullReporter, SearchLimits};

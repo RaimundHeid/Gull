@@ -33,7 +33,7 @@ fn position_reset_keeps_keys_consistent() {
 fn applies_a_move_that_the_legality_helper_misses() {
     // In this position `gen_legal_moves` (the old UCI validation path) omits
     // the perfectly legal ...Nxe4.  The UCI layer must apply the GUI move
-    // directly, as the C++ front end does, or the engine desynchronises.
+    // directly, as the original front end does, or the engine desynchronises.
     let mut e = Engine::with_hash_mb(1);
     e.get_board("rnbqkb1r/pppp1ppp/4pn2/8/4P3/5N1P/PPPP1PP1/RNBQKB1R b KQkq - 0 3");
     assert!(e.play_uci_move("f6e4"));

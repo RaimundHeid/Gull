@@ -1,6 +1,6 @@
 //! Move generation / make-unmake regression tests.
 //!
-//! The expected values are the counts produced by the *C++ engine's own*
+//! The expected values are the counts produced by the *original engine's own*
 //! root move generator, not textbook perft values: Gull's `is_legal` filter
 //! intentionally omits some standard-legal moves, and this port reproduces
 //! that behaviour exactly.

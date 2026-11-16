@@ -1,7 +1,7 @@
 //! Pre-computed data tables, evaluation weights and material tables.
 //!
 //! This is a faithful port of `data.cpp` and the initialisation portion of
-//! `Gull.cpp`.  The random Zobrist keys are generated with the same LCG and
+//! the original engine.  The random Zobrist keys are generated with the same LCG and
 //! the same call order, so hash keys match the C++ engine exactly.
 
 use std::sync::OnceLock;
@@ -216,7 +216,7 @@ pub struct Material {
 }
 
 // ---------------------------------------------------------------------------
-// Magic bitboard constants (from Gull.cpp)
+// Magic bitboard constants (from the original engine)
 // ---------------------------------------------------------------------------
 
 const B_MAGIC: [u64; 64] = [

@@ -1,4 +1,4 @@
-//! A Rust port of the Gull 3 chess engine, derived from the LazyGull C++
+//! A Rust port of the Gull 3 chess engine, derived from the original
 //! implementation in `src/`.
 //!
 //! The code is split into three primary modules:
