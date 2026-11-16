@@ -432,6 +432,7 @@ impl Engine {
     }
 
     /// `is_check<me>`: does not detect castling or en-passant checks.
+    #[inline(always)]
     pub fn is_check(&self, me: Color, mv: Move) -> bool {
         let from = move_from(mv);
         let to = move_to(mv);
@@ -479,6 +480,7 @@ impl Engine {
     }
 
     /// Direct attack test used by the legal-move helper and tests.
+    #[inline(always)]
     pub fn is_square_attacked(&self, s: Square, by: Color) -> bool {
         let occ = self.piece_all();
         if (self.tables.p_att[opp(by)][s] & self.pawn(by)) != 0 {
@@ -1762,6 +1764,7 @@ impl Engine {
         }
     }
 
+    #[inline(always)]
     pub fn get_move(&mut self, me: Color, root: bool) -> i32 {
         if root {
             let cur = self.pos.cur;

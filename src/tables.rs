@@ -468,18 +468,22 @@ pub struct Tables {
 impl Tables {
     #[inline(always)]
     pub fn bishop_attacks(&self, s: Square, occ: u64) -> u64 {
-        let idx = self.b_offset[s]
-            + (((self.b_magic_mask[s] & occ).wrapping_mul(self.b_magic[s])) >> self.b_shift[s])
-                as usize;
-        self.magic_attacks[idx]
+        debug_assert!(s < 64);
+        let idx = unsafe { *self.b_offset.get_unchecked(s) }
+            + (((unsafe { *self.b_magic_mask.get_unchecked(s) } & occ)
+                .wrapping_mul(unsafe { *self.b_magic.get_unchecked(s) }))
+                >> unsafe { *self.b_shift.get_unchecked(s) }) as usize;
+        unsafe { *self.magic_attacks.get_unchecked(idx) }
     }
 
     #[inline(always)]
     pub fn rook_attacks(&self, s: Square, occ: u64) -> u64 {
-        let idx = self.r_offset[s]
-            + (((self.r_magic_mask[s] & occ).wrapping_mul(self.r_magic[s])) >> self.r_shift[s])
-                as usize;
-        self.magic_attacks[idx]
+        debug_assert!(s < 64);
+        let idx = unsafe { *self.r_offset.get_unchecked(s) }
+            + (((unsafe { *self.r_magic_mask.get_unchecked(s) } & occ)
+                .wrapping_mul(unsafe { *self.r_magic.get_unchecked(s) }))
+                >> unsafe { *self.r_shift.get_unchecked(s) }) as usize;
+        unsafe { *self.magic_attacks.get_unchecked(idx) }
     }
 
     #[inline(always)]

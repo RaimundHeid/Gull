@@ -46,8 +46,9 @@ impl Hashes {
     #[inline(always)]
     pub fn load(&self, i: usize) -> HashEntry {
         use std::sync::atomic::Ordering;
-        let w0 = self.words[i * 2].load(Ordering::Relaxed);
-        let w1 = self.words[i * 2 + 1].load(Ordering::Relaxed);
+        debug_assert!(i < self.entries);
+        let w0 = unsafe { self.words.get_unchecked(i * 2) }.load(Ordering::Relaxed);
+        let w1 = unsafe { self.words.get_unchecked(i * 2 + 1) }.load(Ordering::Relaxed);
         HashEntry {
             key: w0 as u32,
             date: (w0 >> 32) as u16,
@@ -69,8 +70,9 @@ impl Hashes {
             | ((e.flags as u64) << 32)
             | ((e.low_depth as u64) << 48)
             | ((e.high_depth as u64) << 56);
-        self.words[i * 2].store(w0, Ordering::Relaxed);
-        self.words[i * 2 + 1].store(w1, Ordering::Relaxed);
+        debug_assert!(i < self.entries);
+        unsafe { self.words.get_unchecked(i * 2) }.store(w0, Ordering::Relaxed);
+        unsafe { self.words.get_unchecked(i * 2 + 1) }.store(w1, Ordering::Relaxed);
     }
 
     pub fn clear(&self) {
@@ -121,9 +123,10 @@ impl PvHashes {
     #[inline(always)]
     pub fn load(&self, i: usize) -> PvEntry {
         use std::sync::atomic::Ordering;
-        let w0 = self.words[i * 3].load(Ordering::Relaxed);
-        let w1 = self.words[i * 3 + 1].load(Ordering::Relaxed);
-        let w2 = self.words[i * 3 + 2].load(Ordering::Relaxed);
+        debug_assert!(i < self.entries);
+        let w0 = unsafe { self.words.get_unchecked(i * 3) }.load(Ordering::Relaxed);
+        let w1 = unsafe { self.words.get_unchecked(i * 3 + 1) }.load(Ordering::Relaxed);
+        let w2 = unsafe { self.words.get_unchecked(i * 3 + 2) }.load(Ordering::Relaxed);
         PvEntry {
             key: w0 as u32,
             date: (w0 >> 32) as u16,
@@ -146,9 +149,10 @@ impl PvHashes {
             | ((e.depth as u64) << 32)
             | ((e.ex_depth as u64) << 40);
         let w2 = (e.knodes as u32 as u64) | ((e.ply as u32 as u64) << 32);
-        self.words[i * 3].store(w0, Ordering::Relaxed);
-        self.words[i * 3 + 1].store(w1, Ordering::Relaxed);
-        self.words[i * 3 + 2].store(w2, Ordering::Relaxed);
+        debug_assert!(i < self.entries);
+        unsafe { self.words.get_unchecked(i * 3) }.store(w0, Ordering::Relaxed);
+        unsafe { self.words.get_unchecked(i * 3 + 1) }.store(w1, Ordering::Relaxed);
+        unsafe { self.words.get_unchecked(i * 3 + 2) }.store(w2, Ordering::Relaxed);
     }
 
     pub fn clear(&self) {
@@ -1312,8 +1316,12 @@ impl Engine {
         let me: Color = if ME { WHITE } else { BLACK };
         let t = &self.tables;
         let cur_idx = self.pos.cur;
-        let current = self.pos.data[cur_idx];
-        let mut next = self.pos.data[cur_idx + 1];
+        // Mutate the child state in place.  The C++ implementation writes into
+        // the existing Data slot and relies on search to initialise transient
+        // fields; copying the whole 168-byte parent state here is unnecessary
+        // and is visible in the hot profile.
+        let current = unsafe { &*(&self.pos.data[cur_idx] as *const State) };
+        let next = unsafe { &mut *(&mut self.pos.data[cur_idx + 1] as *mut State) };
         next.ep_square = 0;
         let to = move_to(mv);
         let capture = self.pos.board.square[to] as usize;
@@ -1508,11 +1516,10 @@ impl Engine {
             next.key ^= t.turn_key;
         }
 
-        self.pos.data[cur_idx + 1] = next;
         self.pos.sp += 1;
         self.pos.stack[self.pos.sp] = next.key;
-        self.pos.data[cur_idx + 1].mv = mv as u16;
-        self.pos.data[cur_idx + 1].gen_flags = 0;
+        next.mv = mv as u16;
+        next.gen_flags = 0;
         self.pos.cur += 1;
         self.pos.nodes += 1;
     }
@@ -1531,7 +1538,7 @@ impl Engine {
         let me: Color = if ME { WHITE } else { BLACK };
         let to = move_to(mv);
         let from = move_from(mv);
-        let cur = self.pos.data[self.pos.cur];
+        let capture = self.pos.data[self.pos.cur].capture;
         if is_promotion(mv) {
             let p = self.pos.board.square[to] as usize;
             self.pos.board.bb[p] ^= bit(to);
@@ -1549,9 +1556,9 @@ impl Engine {
             self.pos.board.bb[piece] &= !bit(to);
             self.pos.board.bb[me] ^= bit(to);
         }
-        self.pos.board.square[to] = cur.capture;
-        if cur.capture != 0 {
-            let c = cur.capture as usize;
+        self.pos.board.square[to] = capture;
+        if capture != 0 {
+            let c = capture as usize;
             self.pos.board.bb[c] |= bit(to);
             self.pos.board.bb[opp(me)] |= bit(to);
         } else if is_castling(mv) {
@@ -1584,8 +1591,8 @@ impl Engine {
     pub fn do_null(&mut self) {
         let t = &self.tables;
         let cur_idx = self.pos.cur;
-        let current = self.pos.data[cur_idx];
-        let mut next = self.pos.data[cur_idx + 1];
+        let current = unsafe { &*(&self.pos.data[cur_idx] as *const State) };
+        let next = unsafe { &mut *(&mut self.pos.data[cur_idx + 1] as *mut State) };
         next.key = current.key ^ t.turn_key;
         next.pawn_key = current.pawn_key;
         next.eval_key = 0;
@@ -1612,7 +1619,6 @@ impl Engine {
         next.score = current.score.wrapping_neg();
         next.mv = 0;
         next.gen_flags = 0;
-        self.pos.data[cur_idx + 1] = next;
         self.pos.sp += 1;
         self.pos.stack[self.pos.sp] = next.key;
         self.pos.cur += 1;
