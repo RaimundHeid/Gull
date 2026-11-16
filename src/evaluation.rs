@@ -225,7 +225,7 @@ impl Engine {
 
         // Pawn hash / pawn structure.
         let pawn_key = self.pos.data[cur].pawn_key;
-        let idx = (pawn_key & PAWN_HASH_MASK as u64) as usize;
+        let idx = (pawn_key & self.pawn_hash_mask as u64) as usize;
         if (pawn_key >> 16) != self.pawn_hash[idx].key48() {
             eval_pawn_structure(&self.pos, &self.tables, &mut self.pawn_hash[idx]);
         }
@@ -292,7 +292,7 @@ impl Engine {
     pub fn evaluate_trace(&mut self) -> EvalTrace {
         self.evaluate();
         let st = &self.pos.data[self.pos.cur];
-        let idx = (st.pawn_key & PAWN_HASH_MASK as u64) as usize;
+        let idx = (st.pawn_key & self.pawn_hash_mask as u64) as usize;
         let _ = idx;
         EvalTrace {
             score: st.score as i32,

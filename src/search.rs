@@ -532,7 +532,8 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+        let list =
+            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let mask = st.mask;
@@ -745,7 +746,8 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+        let list =
+            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let king = lsb(self.king(me));
@@ -1018,7 +1020,8 @@ impl Engine {
     pub fn mark_evasions(&mut self) {
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+        let list =
+            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut i = 0;
         while list[i] != 0 {
             let mv = list[i] & 0xFFFF;
@@ -1037,14 +1040,15 @@ impl Engine {
             }
             i += 1;
         }
-            }
+    }
 
     /// `gen_quiet_moves<me>`
     pub fn gen_quiet_moves(&mut self, me: Color, start: usize) -> usize {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+        let list =
+            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = start;
         let occ = self.piece_all();
         let free = !occ;
@@ -1164,7 +1168,8 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+        let list =
+            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let clear = !(self.piece(me) | st.mask);
@@ -1340,7 +1345,8 @@ impl Engine {
         let t = self.tables;
         let cur = self.pos.cur;
         let st = self.pos.data[cur];
-        let list = unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+        let list =
+            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         let mut n = 0usize;
         let oppc = opp(me);
         let occ = self.piece_all();
@@ -1428,16 +1434,7 @@ impl Engine {
                 );
             }
             let from = (to as i32 - Self::push(me)) as usize;
-            Self::add_delta(
-                list,
-                &mut n,
-                &self.delta,
-                ipawn(me),
-                from,
-                to,
-                0,
-                st.margin,
-            );
+            Self::add_delta(list, &mut n, &self.delta, ipawn(me), from, to, 0, st.margin);
         }
         let mut u = self.knight(me);
         while u != 0 {
@@ -1487,16 +1484,7 @@ impl Engine {
             while v != 0 {
                 let to = lsb(v);
                 cut(&mut v);
-                Self::add_delta(
-                    list,
-                    &mut n,
-                    &self.delta,
-                    irook(me),
-                    from,
-                    to,
-                    0,
-                    st.margin,
-                );
+                Self::add_delta(list, &mut n, &self.delta, irook(me), from, to, 0, st.margin);
             }
         }
         let mut u = self.queen(me);
@@ -1524,16 +1512,7 @@ impl Engine {
             let to = lsb(v);
             cut(&mut v);
             let from = lsb(self.king(me));
-            Self::add_delta(
-                list,
-                &mut n,
-                &self.delta,
-                iking(me),
-                from,
-                to,
-                0,
-                st.margin,
-            );
+            Self::add_delta(list, &mut n, &self.delta, iking(me), from, to, 0, st.margin);
         }
         list[n] = 0;
         n
@@ -1700,9 +1679,8 @@ impl Engine {
         let mut st = self.pos.data[cur];
         st.gen_flags &= !FLAG_SORT;
         self.pos.data[cur] = st;
-        let list = unsafe {
-            std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES)
-        };
+        let list =
+            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
         match st.stage {
             S_HASH_MOVE | R_HASH_MOVE | E_HASH_MOVE => {
                 list[0] = st.killer[0] as i32;
@@ -1835,14 +1813,14 @@ impl Engine {
         let mut depth = -256i32;
         let mut killer = 0i32;
         if let Some(idx) = self.probe_hash() {
-            let e = self.hash[idx];
+            let e = self.hash.load(idx);
             if e.mv != 0 && e.low_depth as i32 > depth {
                 depth = e.low_depth as i32;
                 killer = e.mv as i32;
             }
         }
         if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash[idx];
+            let e = self.pv_hash.load(idx);
             if e.depth as i32 > depth && e.mv != 0 {
                 depth = e.depth as i32;
                 killer = e.mv as i32;
@@ -2165,9 +2143,10 @@ impl Engine {
         let idx = (hash_key_high(key) as usize) & self.hash_mask;
         let date = self.shared.date;
         for i in 0..4 {
-            let e = &mut self.hash[idx + i];
+            let mut e = self.hash.load(idx + i);
             if e.key == hash_key_low(key) {
                 e.date = date;
+                self.hash.store(idx + i, e);
                 return Some(idx + i);
             }
         }
@@ -2180,9 +2159,10 @@ impl Engine {
         let idx = (hash_key_high(key) as usize) & self.pv_hash_mask;
         let date = self.shared.date;
         for i in 0..4 {
-            let e = &mut self.pv_hash[idx + i];
+            let mut e = self.pv_hash.load(idx + i);
             if e.key == hash_key_low(key) {
                 e.date = date;
+                self.pv_hash.store(idx + i, e);
                 return Some(idx + i);
             }
         }
@@ -2197,7 +2177,7 @@ impl Engine {
         let mut best = base;
         for i in 0..4 {
             let idx = base + i;
-            let e = &mut self.hash[idx];
+            let mut e = self.hash.load(idx);
             if e.key == hash_key_low(key) {
                 e.date = self.shared.date;
                 if depth > e.high_depth as i32
@@ -2212,6 +2192,7 @@ impl Engine {
                         e.low = value as i16;
                     }
                 }
+                self.hash.store(idx, e);
                 return;
             }
             let score = ((e.date as i32) << 3) + (e.high_depth.max(e.low_depth) as i32);
@@ -2220,7 +2201,7 @@ impl Engine {
                 best = idx;
             }
         }
-        let e = &mut self.hash[best];
+        let mut e = self.hash.load(best);
         e.date = self.shared.date;
         e.key = hash_key_low(key);
         e.high = value as i16;
@@ -2229,6 +2210,7 @@ impl Engine {
         e.low_depth = 0;
         e.mv = 0;
         e.flags = 0;
+        self.hash.store(best, e);
     }
 
     #[inline(always)]
@@ -2240,7 +2222,7 @@ impl Engine {
         let mut best = base;
         for i in 0..4 {
             let idx = base + i;
-            let e = &mut self.hash[idx];
+            let mut e = self.hash.load(idx);
             if e.key == hash_key_low(key) {
                 e.date = self.shared.date;
                 if depth > e.low_depth as i32
@@ -2260,6 +2242,7 @@ impl Engine {
                 } else if e.mv == 0 {
                     e.mv = mv;
                 }
+                self.hash.store(idx, e);
                 return;
             }
             let score = ((e.date as i32) << 3) + (e.high_depth.max(e.low_depth) as i32);
@@ -2268,7 +2251,7 @@ impl Engine {
                 best = idx;
             }
         }
-        let e = &mut self.hash[best];
+        let mut e = self.hash.load(best);
         e.date = self.shared.date;
         e.key = hash_key_low(key);
         e.high = 0;
@@ -2277,6 +2260,7 @@ impl Engine {
         e.low_depth = depth as u8;
         e.mv = mv;
         e.flags = 0;
+        self.hash.store(best, e);
     }
 
     pub fn hash_exact(
@@ -2294,7 +2278,7 @@ impl Engine {
         let mut best = base;
         for i in 0..4 {
             let idx = base + i;
-            let e = &mut self.pv_hash[idx];
+            let mut e = self.pv_hash.load(idx);
             if e.key == hash_key_low(key) {
                 e.date = self.shared.date;
                 e.knodes += knodes;
@@ -2308,6 +2292,7 @@ impl Engine {
                         e.ex_depth = ex_depth as u8;
                     }
                 }
+                self.pv_hash.store(idx, e);
                 return;
             }
             let score = ((e.date as i32) << 3) + e.depth as i32;
@@ -2316,7 +2301,7 @@ impl Engine {
                 best = idx;
             }
         }
-        let e = &mut self.pv_hash[best];
+        let mut e = self.pv_hash.load(best);
         e.key = hash_key_low(key);
         e.date = self.shared.date;
         e.value = value as i16;
@@ -2326,6 +2311,7 @@ impl Engine {
         e.ex_depth = ex_depth as u8;
         e.knodes = knodes;
         e.ply = self.pos.data[self.pos.cur].ply as i32;
+        self.pv_hash.store(best, e);
     }
 }
 
@@ -2487,14 +2473,14 @@ impl Engine {
         let mut depth = -256;
         let mut mv = 0;
         if let Some(idx) = self.probe_hash() {
-            let e = self.hash[idx];
+            let e = self.hash.load(idx);
             if e.mv != 0 && (e.low_depth as i32) > depth {
                 depth = e.low_depth as i32;
                 mv = e.mv as i32;
             }
         }
         if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash[idx];
+            let e = self.pv_hash.load(idx);
             if e.mv != 0 && (e.depth as i32) > depth {
                 depth = e.depth as i32;
                 mv = e.mv as i32;
@@ -2544,7 +2530,7 @@ impl Engine {
             i += 2;
         }
         if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash[idx];
+            let e = self.pv_hash.load(idx);
             if e.value == 0 {
                 return true;
             }
@@ -2842,7 +2828,7 @@ impl Engine {
         let mut hash_depth = 0;
         if (flags & FLAG_HASH_CHECK) != 0 {
             if let Some(idx) = self.probe_hash() {
-                let e = self.hash[idx];
+                let e = self.hash.load(idx);
                 if e.low_depth != 0 {
                     if e.low as i32 >= beta && !pv {
                         return e.low as i32;
@@ -3073,7 +3059,7 @@ impl Engine {
         let mut hash_depth = 0;
         if (flags & FLAG_HASH_CHECK) != 0 {
             if let Some(idx) = self.probe_hash() {
-                let e = self.hash[idx];
+                let e = self.hash.load(idx);
                 if e.low_depth != 0 {
                     if e.low as i32 >= beta && !pv {
                         return e.low as i32;
@@ -3263,7 +3249,7 @@ impl Engine {
                 hash_move = flags & 0xFFFF;
                 self.pos.data[self.pos.cur].best = hash_move;
                 if let Some(idx) = self.probe_hash() {
-                    let e = self.hash[idx];
+                    let e = self.hash.load(idx);
                     if (e.high_depth as i32) > high_depth {
                         high_depth = e.high_depth as i32;
                         high_value = e.high as i32;
@@ -3303,7 +3289,7 @@ impl Engine {
                 // Tablebases intentionally omitted.
                 if depth >= 20 {
                     if let Some(idx) = self.probe_pv_hash() {
-                        let e = self.pv_hash[idx];
+                        let e = self.pv_hash.load(idx);
                         self.hash_low(e.mv as i32, e.value as i32, e.depth as i32);
                         self.hash_high(e.value as i32, e.depth as i32);
                         if (e.depth as i32) >= depth {
@@ -3668,7 +3654,7 @@ impl Engine {
         } else {
             self.pos.data[self.pos.cur].best = hash_move;
             if let Some(idx) = self.probe_hash() {
-                let e = self.hash[idx];
+                let e = self.hash.load(idx);
                 if (e.high as i32) < beta && (e.high_depth as i32) >= depth {
                     return e.high as i32;
                 }
@@ -3693,7 +3679,7 @@ impl Engine {
             }
             if depth >= 20 {
                 if let Some(idx) = self.probe_pv_hash() {
-                    let e = self.pv_hash[idx];
+                    let e = self.pv_hash.load(idx);
                     self.hash_low(e.mv as i32, e.value as i32, e.depth as i32);
                     self.hash_high(e.value as i32, e.depth as i32);
                     if (e.depth as i32) >= depth {
@@ -3959,7 +3945,7 @@ impl Engine {
         hash_move = 0;
         self.pos.data[self.pos.cur].best = 0;
         if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash[idx];
+            let e = self.pv_hash.load(idx);
             self.hash_low(e.mv as i32, e.value as i32, e.depth as i32);
             self.hash_high(e.value as i32, e.depth as i32);
             if (e.depth as i32) >= depth && self.pv_hashing != 0 {
@@ -3981,7 +3967,7 @@ impl Engine {
             }
         }
         if let Some(idx) = self.probe_hash() {
-            let e = self.hash[idx];
+            let e = self.hash.load(idx);
             if e.mv != 0 && (e.low_depth as i32) > hash_depth {
                 hash_move = e.mv as i32;
                 self.pos.data[self.pos.cur].best = hash_move;
@@ -4471,6 +4457,17 @@ impl Engine {
 
         self.evaluate();
         self.gen_root_moves(me);
+        if self.thread_id != 0 {
+            let n = self
+                .root_list
+                .iter()
+                .position(|&m| m == 0)
+                .unwrap_or(self.root_list.len());
+            if n > 1 {
+                let shift = self.thread_id as usize % n;
+                self.root_list[..n].rotate_left(shift);
+            }
+        }
         if self.settings.multi_pv > 1 {
             self.multi_pv = [0; 256];
             let mut i = 0;
@@ -4496,7 +4493,7 @@ impl Engine {
         self.base_si = SearchInfo::default();
         self.previous = -MATE_VALUE;
         if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash[idx];
+            let e = self.pv_hash.load(idx);
             if e.mv != 0
                 && self.is_legal(me, e.mv as i32)
                 && e.mv as i32 == self.stats.best_move
@@ -4763,14 +4760,24 @@ impl Engine {
         self.shared.hard_time_limit = hard;
     }
 
-    /// Run a search to completion (single-threaded).
+    /// Run a search to completion; uses Lazy SMP when `Threads` > 1.
     pub fn go(&mut self, limits: &SearchLimits) -> SearchResult {
+        let threads = self.settings.num_threads.clamp(1, 256);
+        if threads <= 1 {
+            self.go_single_at(limits, now_ms())
+        } else {
+            self.go_smp(limits, threads)
+        }
+    }
+
+    fn go_single_at(&mut self, limits: &SearchLimits, start_time: u64) -> SearchResult {
         self.apply_limits(limits);
         self.pos.nodes = 0;
         self.pos.tb_hits = 0;
         self.stats.stop = false;
         self.stats.pv = [0; 64];
-        self.shared.start_time = now_ms();
+        self.stats.id = self.thread_id as i32;
+        self.shared.start_time = start_time;
         self.save_root();
         let result = catch_unwind(AssertUnwindSafe(|| {
             self.root();
@@ -4780,6 +4787,40 @@ impl Engine {
             self.stats.stop = true;
         }
         self.result()
+    }
+
+    fn go_smp(&mut self, limits: &SearchLimits, threads: usize) -> SearchResult {
+        let start_time = now_ms();
+        // Workers use a smaller private pawn hash; the main engine keeps the
+        // full-size one.  This keeps Threads=256 within reasonable memory.
+        let worker_pawn_entries = 1usize << 14;
+        let mut handles = Vec::with_capacity(threads - 1);
+        for id in 1..threads {
+            let mut worker = self.fork_for_thread(id as u32, worker_pawn_entries);
+            let lim = limits.clone();
+            let handle = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    let result = worker.go_single_at(&lim, start_time);
+                    (worker, result)
+                });
+            if let Ok(handle) = handle {
+                handles.push(handle);
+            }
+        }
+
+        let mut main_result = self.go_single_at(limits, start_time);
+
+        // Stop and collect workers.  The main thread's result is the one
+        // reported to the UCI layer, but node counts are accumulated.
+        self.control.request_stop();
+        for handle in handles {
+            if let Ok((_worker, result)) = handle.join() {
+                main_result.nodes = main_result.nodes.saturating_add(result.nodes);
+            }
+        }
+        self.control.reset();
+        main_result
     }
 }
 
@@ -4806,7 +4847,7 @@ mod extra_search_tests {
         e.hash_low(0x1234, 42, 7);
         e.hash_high(50, 9);
         let idx = e.probe_hash().expect("hash entry");
-        assert_eq!(e.hash[idx].key, e.pos.cur().key as u32);
+        assert_eq!(e.hash.load(idx).key, e.pos.cur().key as u32);
     }
 
     #[test]

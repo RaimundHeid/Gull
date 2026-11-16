@@ -7,88 +7,162 @@
 //! material bookkeeping.
 
 use crate::search::{NullReporter, Reporter};
-use crate::tables::{tables, Tables, PAWN_HASH_SIZE, PV_HASH_MASK, PV_HASH_SIZE};
+use crate::tables::{tables, Tables, PAWN_HASH_MASK, PAWN_HASH_SIZE, PV_HASH_MASK, PV_HASH_SIZE};
 use crate::types::*;
+use std::sync::Arc;
 
 pub const HASH_ENTRY_SIZE: usize = 16;
 
-pub struct Hashes(Vec<HashEntry>);
+pub struct Hashes {
+    words: Vec<std::sync::atomic::AtomicU64>,
+    entries: usize,
+}
 
 impl Default for Hashes {
     fn default() -> Self {
-        Hashes(Vec::new())
+        Hashes {
+            words: Vec::new(),
+            entries: 0,
+        }
     }
 }
 
-impl std::ops::Index<usize> for Hashes {
-    type Output = HashEntry;
+impl Hashes {
+    pub fn new(entries: usize) -> Self {
+        Hashes {
+            words: (0..entries * 2)
+                .map(|_| std::sync::atomic::AtomicU64::new(0))
+                .collect(),
+            entries,
+        }
+    }
+
     #[inline(always)]
-    fn index(&self, i: usize) -> &HashEntry {
-        debug_assert!(i < self.0.len());
-        unsafe { self.0.get_unchecked(i) }
+    pub fn entries(&self) -> usize {
+        self.entries
     }
-}
 
-impl std::ops::IndexMut<usize> for Hashes {
     #[inline(always)]
-    fn index_mut(&mut self, i: usize) -> &mut HashEntry {
-        debug_assert!(i < self.0.len());
-        unsafe { self.0.get_unchecked_mut(i) }
+    pub fn load(&self, i: usize) -> HashEntry {
+        use std::sync::atomic::Ordering;
+        let w0 = self.words[i * 2].load(Ordering::Relaxed);
+        let w1 = self.words[i * 2 + 1].load(Ordering::Relaxed);
+        HashEntry {
+            key: w0 as u32,
+            date: (w0 >> 32) as u16,
+            mv: (w0 >> 48) as u16,
+            low: w1 as u16 as i16,
+            high: (w1 >> 16) as u16 as i16,
+            flags: (w1 >> 32) as u16,
+            low_depth: (w1 >> 48) as u8,
+            high_depth: (w1 >> 56) as u8,
+        }
     }
-}
 
-impl std::ops::Deref for Hashes {
-    type Target = [HashEntry];
     #[inline(always)]
-    fn deref(&self) -> &[HashEntry] {
-        &self.0
+    pub fn store(&self, i: usize, e: HashEntry) {
+        use std::sync::atomic::Ordering;
+        let w0 = e.key as u64 | ((e.date as u64) << 32) | ((e.mv as u64) << 48);
+        let w1 = (e.low as u16 as u64)
+            | ((e.high as u16 as u64) << 16)
+            | ((e.flags as u64) << 32)
+            | ((e.low_depth as u64) << 48)
+            | ((e.high_depth as u64) << 56);
+        self.words[i * 2].store(w0, Ordering::Relaxed);
+        self.words[i * 2 + 1].store(w1, Ordering::Relaxed);
+    }
+
+    pub fn clear(&self) {
+        use std::sync::atomic::Ordering;
+        for w in &self.words {
+            w.store(0, Ordering::Relaxed);
+        }
+    }
+
+    pub fn reset_dates(&self, date: u16) {
+        for i in 0..self.entries {
+            let mut e = self.load(i);
+            e.date = date;
+            self.store(i, e);
+        }
     }
 }
 
-impl std::ops::DerefMut for Hashes {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut [HashEntry] {
-        &mut self.0
-    }
+pub struct PvHashes {
+    words: Vec<std::sync::atomic::AtomicU64>,
+    entries: usize,
 }
-
-pub struct PvHashes(Vec<PvEntry>);
 
 impl Default for PvHashes {
     fn default() -> Self {
-        PvHashes(Vec::new())
+        PvHashes {
+            words: Vec::new(),
+            entries: 0,
+        }
     }
 }
 
-impl std::ops::Index<usize> for PvHashes {
-    type Output = PvEntry;
-    #[inline(always)]
-    fn index(&self, i: usize) -> &PvEntry {
-        debug_assert!(i < self.0.len());
-        unsafe { self.0.get_unchecked(i) }
+impl PvHashes {
+    pub fn new(entries: usize) -> Self {
+        PvHashes {
+            words: (0..entries * 3)
+                .map(|_| std::sync::atomic::AtomicU64::new(0))
+                .collect(),
+            entries,
+        }
     }
-}
 
-impl std::ops::IndexMut<usize> for PvHashes {
     #[inline(always)]
-    fn index_mut(&mut self, i: usize) -> &mut PvEntry {
-        debug_assert!(i < self.0.len());
-        unsafe { self.0.get_unchecked_mut(i) }
+    pub fn entries(&self) -> usize {
+        self.entries
     }
-}
 
-impl std::ops::Deref for PvHashes {
-    type Target = [PvEntry];
     #[inline(always)]
-    fn deref(&self) -> &[PvEntry] {
-        &self.0
+    pub fn load(&self, i: usize) -> PvEntry {
+        use std::sync::atomic::Ordering;
+        let w0 = self.words[i * 3].load(Ordering::Relaxed);
+        let w1 = self.words[i * 3 + 1].load(Ordering::Relaxed);
+        let w2 = self.words[i * 3 + 2].load(Ordering::Relaxed);
+        PvEntry {
+            key: w0 as u32,
+            date: (w0 >> 32) as u16,
+            mv: (w0 >> 48) as u16,
+            value: w1 as u16 as i16,
+            exclusion: (w1 >> 16) as u16 as i16,
+            depth: (w1 >> 32) as u8,
+            ex_depth: (w1 >> 40) as u8,
+            knodes: w2 as u32 as i32,
+            ply: (w2 >> 32) as u32 as i32,
+        }
     }
-}
 
-impl std::ops::DerefMut for PvHashes {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut [PvEntry] {
-        &mut self.0
+    pub fn store(&self, i: usize, e: PvEntry) {
+        use std::sync::atomic::Ordering;
+        let w0 = e.key as u64 | ((e.date as u64) << 32) | ((e.mv as u64) << 48);
+        let w1 = (e.value as u16 as u64)
+            | ((e.exclusion as u16 as u64) << 16)
+            | ((e.depth as u64) << 32)
+            | ((e.ex_depth as u64) << 40);
+        let w2 = (e.knodes as u32 as u64) | ((e.ply as u32 as u64) << 32);
+        self.words[i * 3].store(w0, Ordering::Relaxed);
+        self.words[i * 3 + 1].store(w1, Ordering::Relaxed);
+        self.words[i * 3 + 2].store(w2, Ordering::Relaxed);
+    }
+
+    pub fn clear(&self) {
+        use std::sync::atomic::Ordering;
+        for w in &self.words {
+            w.store(0, Ordering::Relaxed);
+        }
+    }
+
+    pub fn reset_dates(&self, date: u16) {
+        for i in 0..self.entries {
+            let mut e = self.load(i);
+            e.date = date;
+            self.store(i, e);
+        }
     }
 }
 
@@ -428,6 +502,7 @@ impl std::ops::DerefMut for Data {
     }
 }
 
+#[derive(Clone)]
 pub struct Position {
     pub board: Board,
     pub data: Data,
@@ -477,15 +552,16 @@ pub struct Engine {
     pub tables: &'static Tables,
     pub pos: Position,
     pub pawn_hash: Vec<PawnEntry>,
-    pub hash: Hashes,
-    pub pv_hash: PvHashes,
+    pub pawn_hash_mask: usize,
+    pub hash: Arc<Hashes>,
+    pub pv_hash: Arc<PvHashes>,
     pub hash_mask: usize,
     pub pv_hash_mask: usize,
     pub history: [i16; 16 * 64],
-    pub delta: [i16; 16 * 4096],
-    pub reference: [Reference; 16 * 64],
+    pub delta: Box<[i16; 16 * 4096]>,
+    pub reference: Box<[Reference; 16 * 64]>,
     pub root_list: [i32; 256],
-    pub move_lists: MoveLists,
+    pub move_lists: Box<MoveLists>,
     pub multi_pv: [i32; 256],
     pub settings: Settings,
     pub shared: crate::search::SharedInfo,
@@ -504,6 +580,7 @@ pub struct Engine {
     pub previous: i32,
     pub aspiration: i32,
     pub info_time: i64,
+    pub thread_id: u32,
     pub reporter: Box<dyn Reporter>,
     pub control: crate::search::SearchControl,
     pub save_board: Board,
@@ -526,15 +603,16 @@ impl Engine {
             tables: tables(),
             pos: Position::default(),
             pawn_hash: vec![PawnEntry::default(); PAWN_HASH_SIZE],
-            hash: Hashes::default(),
-            pv_hash: PvHashes::default(),
+            pawn_hash_mask: PAWN_HASH_MASK,
+            hash: Arc::new(Hashes::default()),
+            pv_hash: Arc::new(PvHashes::default()),
             hash_mask: entries - 4,
             pv_hash_mask: PV_HASH_MASK,
             history: [0; 16 * 64],
-            delta: [0; 16 * 4096],
-            reference: [Reference::default(); 16 * 64],
+            delta: Box::new([0; 16 * 4096]),
+            reference: Box::new([Reference::default(); 16 * 64]),
             root_list: [0; 256],
-            move_lists: MoveLists::default(),
+            move_lists: Box::new(MoveLists::default()),
             multi_pv: [0; 256],
             settings: Settings {
                 hash_size: bytes,
@@ -556,6 +634,7 @@ impl Engine {
             previous: 0,
             aspiration: 1,
             info_time: 0,
+            thread_id: 0,
             reporter: Box::new(NullReporter),
             control: crate::search::SearchControl::default(),
             save_board: Board::default(),
@@ -564,6 +643,58 @@ impl Engine {
         };
         e.init_search(true);
         e
+    }
+
+    /// Create a Lazy-SMP worker sharing the transposition/PV tables with this
+    /// engine.  History, refutation, pawn hash and position state are private.
+    pub fn fork_for_thread(&self, thread_id: u32, pawn_entries: usize) -> Engine {
+        let pawn_entries = pawn_entries.max(1);
+        let mut settings = self.settings;
+        settings.num_threads = 1;
+        Engine {
+            tables: self.tables,
+            pos: self.pos.clone(),
+            pawn_hash: vec![PawnEntry::default(); pawn_entries],
+            pawn_hash_mask: pawn_entries - 1,
+            hash: Arc::clone(&self.hash),
+            pv_hash: Arc::clone(&self.pv_hash),
+            hash_mask: self.hash_mask,
+            pv_hash_mask: self.pv_hash_mask,
+            history: self.history,
+            delta: self.delta.clone(),
+            reference: self.reference.clone(),
+            root_list: self.root_list,
+            move_lists: Box::new(MoveLists::default()),
+            multi_pv: self.multi_pv,
+            settings,
+            shared: self.shared,
+            stats: crate::search::SearchStats::default(),
+            si: crate::search::SearchInfo::default(),
+            base_si: crate::search::SearchInfo::default(),
+            last_depth: 128,
+            last_time: 0,
+            last_value: 0,
+            last_exact_value: 0,
+            last_speed: 0,
+            prev_move: 0,
+            inst_cnt: 0,
+            pv_hashing: self.pv_hashing,
+            search_moves: self.search_moves,
+            previous: 0,
+            aspiration: 1,
+            info_time: 0,
+            thread_id,
+            reporter: Box::new(NullReporter),
+            control: self.control.clone(),
+            save_board: Board::default(),
+            save_state: State::default(),
+            save_sp: 0,
+        }
+    }
+
+    /// Set the Lazy SMP thread count (UCI `Threads`), clamped to 1..=256.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.settings.num_threads = threads.clamp(1, 256);
     }
 
     /// Resize the transposition table; `mb` follows the UCI Hash option.
@@ -582,19 +713,19 @@ impl Engine {
         }
         if clear_hash {
             self.shared.date = 1;
-            self.hash.fill(HashEntry::default());
-            self.pv_hash.fill(PvEntry::default());
+            self.hash.clear();
+            self.pv_hash.clear();
         }
         let bytes = self.settings.hash_size;
         let entries = bytes / HASH_ENTRY_SIZE;
         debug_assert!(entries.is_power_of_two());
-        if self.hash.len() != entries {
-            self.hash = Hashes(vec![HashEntry::default(); entries]);
+        if self.hash.entries() != entries {
+            self.hash = Arc::new(Hashes::new(entries));
         }
         self.hash_mask = entries - 4;
         self.pv_hash_mask = PV_HASH_MASK;
-        if self.pv_hash.len() != PV_HASH_SIZE {
-            self.pv_hash = PvHashes(vec![PvEntry::default(); PV_HASH_SIZE]);
+        if self.pv_hash.entries() != PV_HASH_SIZE {
+            self.pv_hash = Arc::new(PvHashes::new(PV_HASH_SIZE));
         }
         self.get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         self.last_time = 0;
@@ -619,12 +750,8 @@ impl Engine {
         self.shared.date = self.shared.date.wrapping_add(1);
         if self.shared.date > 0x8000 {
             self.shared.date = 2;
-            for e in self.hash.iter_mut() {
-                e.date = 1;
-            }
-            for e in self.pv_hash.iter_mut() {
-                e.date = 1;
-            }
+            self.hash.reset_dates(1);
+            self.pv_hash.reset_dates(1);
         }
         {
             let st = &mut self.pos.data[0];

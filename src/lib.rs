@@ -13,7 +13,8 @@
 //! Supporting modules [`types`], [`tables`] and [`position`] provide the
 //! board representation, move encoding and the pre-computed data tables.
 //!
-//! The port is single threaded and does not include tablebase support.
+//! The port implements Lazy SMP (up to 256 threads) and does not include
+//! tablebase support.
 
 pub mod communication;
 pub mod evaluation;

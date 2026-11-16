@@ -2,7 +2,7 @@
 name = "gull"
 version = "0.1.0"
 edition = "2021"
-description = "Rust port of the Gull chess engine (single-threaded, no tablebases)"
+description = "Rust port of the Gull chess engine (Lazy SMP, no tablebases)"
 license = "MIT"
 
 [[bin]]

@@ -2,8 +2,8 @@
 //!
 //! This is deliberately small: it parses the UCI commands needed to drive the
 //! engine and prints the standard `info` / `bestmove` responses.  The search
-//! itself is single-threaded; `go` runs it in a worker thread so that `stop`
-//! and `quit` remain responsive.
+//! runs in a worker thread so that `stop` and `quit` remain responsive; the
+//! engine itself uses Lazy SMP when configured with multiple threads.
 
 use std::io::{self, BufRead, Write};
 use std::thread::{self, JoinHandle};
@@ -75,16 +75,20 @@ pub fn run() {
                 println!("id name Gull");
                 println!("id author Gull contributors");
                 println!("option name Hash type spin default 128 min 1 max 32768");
-                println!("option name Threads type spin default 1 min 1 max 1");
+                println!("option name Threads type spin default 1 min 1 max 256");
                 println!("uciok");
             }
             "isready" => println!("readyok"),
             "setoption" => {
                 if let Some((name, value)) = parse_option(&tokens) {
+                    stop_and_join(&mut running, &mut engine);
                     if name.eq_ignore_ascii_case("Hash") {
-                        stop_and_join(&mut running, &mut engine);
                         if let (Some(e), Ok(mb)) = (engine.as_mut(), value.parse::<u64>()) {
                             e.resize_hash(mb);
+                        }
+                    } else if name.eq_ignore_ascii_case("Threads") {
+                        if let (Some(e), Ok(n)) = (engine.as_mut(), value.parse::<usize>()) {
+                            e.set_threads(n);
                         }
                     }
                 }
