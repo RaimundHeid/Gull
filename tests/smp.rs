@@ -124,3 +124,18 @@ fn concurrent_tt_stores_and_loads_are_safe() {
         h.join().unwrap();
     }
 }
+
+#[test]
+fn node_counter_is_shared_across_workers() {
+    let e = Engine::with_hash_mb(1);
+    e.shared_nodes
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    let w = e.fork_for_thread(2, 1 << 10);
+    w.shared_nodes
+        .fetch_add(1234, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        e.shared_nodes.load(std::sync::atomic::Ordering::Relaxed),
+        1234
+    );
+    assert!(e.total_nodes() >= 1234);
+}

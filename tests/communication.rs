@@ -106,3 +106,39 @@ fn uci_smp_start_stop() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("bestmove"), "{text}");
 }
+
+#[test]
+fn uci_thread_change_restarts_running_analysis() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gull"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn gull");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "uci").unwrap();
+        writeln!(stdin, "setoption name Threads value 1").unwrap();
+        writeln!(stdin, "position startpos").unwrap();
+        writeln!(stdin, "go infinite").unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "setoption name Threads value 4").unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "stop").unwrap();
+        writeln!(stdin, "quit").unwrap();
+    }
+    let output = child.wait_with_output().expect("wait");
+    let text = String::from_utf8_lossy(&output.stdout);
+    // One bestmove from stopping the old analysis and one from the restarted
+    // 4-thread analysis.
+    assert!(
+        text.lines().filter(|l| l.starts_with("bestmove")).count() >= 2,
+        "{text}"
+    );
+}

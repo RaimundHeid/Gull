@@ -2349,6 +2349,22 @@ impl Engine {
         resume_unwind(Box::new(SearchAborted));
     }
 
+    #[inline(always)]
+    fn publish_nodes(&mut self) {
+        if self.pos.nodes > self.nodes_base {
+            let delta = self.pos.nodes - self.nodes_base;
+            self.shared_nodes.fetch_add(delta, Ordering::Relaxed);
+            self.nodes_base = self.pos.nodes;
+        }
+    }
+
+    #[inline(always)]
+    pub fn total_nodes(&self) -> u64 {
+        self.shared_nodes
+            .load(Ordering::Relaxed)
+            .saturating_add(self.pos.nodes.saturating_sub(self.nodes_base))
+    }
+
     pub fn check_for_stop(&mut self) {
         // Polling on every node is expensive.  A 1024-node interval is still
         // well under a millisecond at current search speeds, so `stop` remains
@@ -2356,6 +2372,7 @@ impl Engine {
         if self.pos.nodes & 0x3FF != 0 {
             return;
         }
+        self.publish_nodes();
         if self.control.is_stopped() {
             Self::abort_search();
         }
@@ -2575,7 +2592,8 @@ impl Engine {
             let t = now_ms().saturating_sub(self.shared.start_time);
             t.max(1)
         };
-        let nodes = self.pos.nodes;
+        self.publish_nodes();
+        let nodes = self.total_nodes();
         let info = Info {
             multipv: 0,
             depth: depth / 2,
@@ -4764,6 +4782,7 @@ impl Engine {
     pub fn go(&mut self, limits: &SearchLimits) -> SearchResult {
         let threads = self.settings.num_threads.clamp(1, 256);
         if threads <= 1 {
+            self.shared_nodes.store(0, Ordering::Relaxed);
             self.go_single_at(limits, now_ms())
         } else {
             self.go_smp(limits, threads)
@@ -4778,6 +4797,7 @@ impl Engine {
         self.stats.pv = [0; 64];
         self.stats.id = self.thread_id as i32;
         self.shared.start_time = start_time;
+        self.nodes_base = 0;
         self.save_root();
         let result = catch_unwind(AssertUnwindSafe(|| {
             self.root();
@@ -4786,11 +4806,13 @@ impl Engine {
             self.restore_shared_root();
             self.stats.stop = true;
         }
+        self.publish_nodes();
         self.result()
     }
 
     fn go_smp(&mut self, limits: &SearchLimits, threads: usize) -> SearchResult {
         let start_time = now_ms();
+        self.shared_nodes.store(0, Ordering::Relaxed);
         // Workers use a smaller private pawn hash; the main engine keeps the
         // full-size one.  This keeps Threads=256 within reasonable memory.
         let worker_pawn_entries = 1usize << 14;
@@ -4815,10 +4837,9 @@ impl Engine {
         // reported to the UCI layer, but node counts are accumulated.
         self.control.request_stop();
         for handle in handles {
-            if let Ok((_worker, result)) = handle.join() {
-                main_result.nodes = main_result.nodes.saturating_add(result.nodes);
-            }
+            let _ = handle.join();
         }
+        main_result.nodes = self.shared_nodes.load(Ordering::Relaxed);
         self.control.reset();
         main_result
     }

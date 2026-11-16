@@ -9,6 +9,7 @@
 use crate::search::{NullReporter, Reporter};
 use crate::tables::{tables, Tables, PAWN_HASH_MASK, PAWN_HASH_SIZE, PV_HASH_MASK, PV_HASH_SIZE};
 use crate::types::*;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 pub const HASH_ENTRY_SIZE: usize = 16;
@@ -581,6 +582,8 @@ pub struct Engine {
     pub aspiration: i32,
     pub info_time: i64,
     pub thread_id: u32,
+    pub shared_nodes: Arc<AtomicU64>,
+    pub nodes_base: u64,
     pub reporter: Box<dyn Reporter>,
     pub control: crate::search::SearchControl,
     pub save_board: Board,
@@ -635,6 +638,8 @@ impl Engine {
             aspiration: 1,
             info_time: 0,
             thread_id: 0,
+            shared_nodes: Arc::new(AtomicU64::new(0)),
+            nodes_base: 0,
             reporter: Box::new(NullReporter),
             control: crate::search::SearchControl::default(),
             save_board: Board::default(),
@@ -684,6 +689,8 @@ impl Engine {
             aspiration: 1,
             info_time: 0,
             thread_id,
+            shared_nodes: Arc::clone(&self.shared_nodes),
+            nodes_base: 0,
             reporter: Box::new(NullReporter),
             control: self.control.clone(),
             save_board: Board::default(),

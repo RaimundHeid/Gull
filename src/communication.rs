@@ -58,6 +58,7 @@ pub fn run() {
     let mut engine = Some(Engine::new());
     engine.as_mut().unwrap().reporter = Box::new(UciReporter);
     let mut running: Option<Running> = None;
+    let mut last_limits: Option<SearchLimits> = None;
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
 
@@ -81,7 +82,9 @@ pub fn run() {
             "isready" => println!("readyok"),
             "setoption" => {
                 if let Some((name, value)) = parse_option(&tokens) {
+                    let was_running = running.is_some();
                     stop_and_join(&mut running, &mut engine);
+                    let mut restart = false;
                     if name.eq_ignore_ascii_case("Hash") {
                         if let (Some(e), Ok(mb)) = (engine.as_mut(), value.parse::<u64>()) {
                             e.resize_hash(mb);
@@ -89,18 +92,28 @@ pub fn run() {
                     } else if name.eq_ignore_ascii_case("Threads") {
                         if let (Some(e), Ok(n)) = (engine.as_mut(), value.parse::<usize>()) {
                             e.set_threads(n);
+                            restart = was_running;
+                        }
+                    }
+                    // Changing the thread count during analysis should start a
+                    // fresh search with the same limits, like other UCI engines.
+                    if restart {
+                        if let Some(limits) = last_limits.clone() {
+                            launch_search(&mut engine, &mut running, limits);
                         }
                     }
                 }
             }
             "ucinewgame" => {
                 stop_and_join(&mut running, &mut engine);
+                last_limits = None;
                 if let Some(e) = engine.as_mut() {
                     e.init_search(true);
                 }
             }
             "position" => {
                 stop_and_join(&mut running, &mut engine);
+                last_limits = None;
                 if let Some(e) = engine.as_mut() {
                     let _ = set_position(e, &tokens[1..]);
                 }
@@ -108,18 +121,8 @@ pub fn run() {
             "go" => {
                 stop_and_join(&mut running, &mut engine);
                 let limits = parse_go(&tokens[1..]);
-                let mut moved = Box::new(engine.take().unwrap());
-                moved.control.reset();
-                let control = moved.control.clone();
-                let handle = thread::Builder::new()
-                    .stack_size(32 * 1024 * 1024)
-                    .spawn(move || {
-                        let result = moved.go(&limits);
-                        print_bestmove(&result);
-                        (*moved, result)
-                    })
-                    .expect("spawn search thread");
-                running = Some(Running { handle, control });
+                last_limits = Some(limits.clone());
+                launch_search(&mut engine, &mut running, limits);
             }
             "stop" => {
                 if let Some(r) = running.as_ref() {
@@ -146,6 +149,21 @@ pub fn run() {
         }
         let _ = io::stdout().flush();
     }
+}
+
+fn launch_search(engine: &mut Option<Engine>, running: &mut Option<Running>, limits: SearchLimits) {
+    let mut moved = Box::new(engine.take().expect("engine available"));
+    moved.control.reset();
+    let control = moved.control.clone();
+    let handle = thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let result = moved.go(&limits);
+            print_bestmove(&result);
+            (*moved, result)
+        })
+        .expect("spawn search thread");
+    *running = Some(Running { handle, control });
 }
 
 fn stop_and_join(running: &mut Option<Running>, engine: &mut Option<Engine>) {
