@@ -142,3 +142,27 @@ fn uci_thread_change_restarts_running_analysis() {
         "{text}"
     );
 }
+
+#[test]
+fn uci_loads_syzygy_path_and_uses_root_probe() {
+    let path = format!("{}/tests/fixtures/syzygy", env!("CARGO_MANIFEST_DIR"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gull"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn gull");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "uci").unwrap();
+        writeln!(stdin, "setoption name SyzygyPath value {path}").unwrap();
+        writeln!(stdin, "position fen 8/8/8/8/8/8/Q7/K1k5 w - - 0 1").unwrap();
+        writeln!(stdin, "go depth 5").unwrap();
+        writeln!(stdin, "quit").unwrap();
+    }
+    let output = child.wait_with_output().expect("wait");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Syzygy tablebases loaded"), "{text}");
+    assert!(text.contains("tbhits 1"), "{text}");
+    assert!(text.contains("bestmove"), "{text}");
+}

@@ -556,6 +556,8 @@ pub struct Engine {
     pub pawn_hash_mask: usize,
     pub hash: Arc<Hashes>,
     pub pv_hash: Arc<PvHashes>,
+    pub tablebases: Option<Arc<crate::tablebase::GullTableBases>>,
+    pub tablebase_max: usize,
     pub hash_mask: usize,
     pub pv_hash_mask: usize,
     pub history: [i16; 16 * 64],
@@ -609,6 +611,8 @@ impl Engine {
             pawn_hash_mask: PAWN_HASH_MASK,
             hash: Arc::new(Hashes::default()),
             pv_hash: Arc::new(PvHashes::default()),
+            tablebases: None,
+            tablebase_max: 0,
             hash_mask: entries - 4,
             pv_hash_mask: PV_HASH_MASK,
             history: [0; 16 * 64],
@@ -663,6 +667,8 @@ impl Engine {
             pawn_hash_mask: pawn_entries - 1,
             hash: Arc::clone(&self.hash),
             pv_hash: Arc::clone(&self.pv_hash),
+            tablebases: self.tablebases.clone(),
+            tablebase_max: self.tablebase_max,
             hash_mask: self.hash_mask,
             pv_hash_mask: self.pv_hash_mask,
             history: self.history,
@@ -697,6 +703,28 @@ impl Engine {
             save_state: State::default(),
             save_sp: 0,
         }
+    }
+
+    /// Load a Syzygy path (UCI `SyzygyPath`).  An empty path disables
+    /// tablebases.  Returns the number of supported pieces, or 0 when disabled.
+    pub fn set_syzygy_path(&mut self, path: &str) -> Result<usize, String> {
+        // Drop the old handle first: pyrrhic-rs uses a process-wide singleton.
+        self.tablebases = None;
+        self.tablebase_max = 0;
+        match crate::tablebase::load(path) {
+            Ok(Some((tb, pieces))) => {
+                self.tablebases = Some(tb);
+                self.tablebase_max = pieces;
+                Ok(pieces)
+            }
+            Ok(None) => Ok(0),
+            Err(e) => Err(e),
+        }
+    }
+
+    #[inline]
+    pub fn tablebase_pieces(&self) -> usize {
+        self.tablebase_max
     }
 
     /// Set the Lazy SMP thread count (UCI `Threads`), clamped to 1..=256.

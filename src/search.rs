@@ -2133,6 +2133,111 @@ impl Engine {
 }
 
 // ---------------------------------------------------------------------------
+// Syzygy tablebase probing
+// ---------------------------------------------------------------------------
+
+impl Engine {
+    #[inline]
+    fn tb_pieces(&self) -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+        let pos = &self.pos;
+        let b = &pos.board;
+        (
+            b.bb[WHITE],
+            b.bb[BLACK],
+            b.bb[WHITE_KING] | b.bb[BLACK_KING],
+            b.bb[WHITE_QUEEN] | b.bb[BLACK_QUEEN],
+            b.bb[WHITE_ROOK] | b.bb[BLACK_ROOK],
+            b.bb[WHITE_LIGHT] | b.bb[WHITE_DARK] | b.bb[BLACK_LIGHT] | b.bb[BLACK_DARK],
+            b.bb[WHITE_KNIGHT] | b.bb[BLACK_KNIGHT],
+            b.bb[WHITE_PAWN] | b.bb[BLACK_PAWN],
+        )
+    }
+
+    /// Probe the WDL tables for the current position.  Positions with castling
+    /// rights are skipped because Syzygy does not model castling.
+    fn probe_tb_wdl(&mut self) -> Option<i32> {
+        let max = self.tablebase_pieces();
+        if max == 0 || self.piece_all().count_ones() as usize > max {
+            return None;
+        }
+        let st = self.pos.data[self.pos.cur];
+        if st.castle_flags != 0 {
+            return None;
+        }
+        let (white, black, kings, queens, rooks, bishops, knights, pawns) = self.tb_pieces();
+        let turn = st.turn as usize == WHITE;
+        let ep = st.ep_square as u32;
+        let tb = self.tablebases.as_ref()?;
+        let result = tb.probe_wdl(
+            white, black, kings, queens, rooks, bishops, knights, pawns, ep, turn,
+        );
+        match result {
+            Ok(wdl) => {
+                self.pos.tb_hits += 1;
+                Some(crate::tablebase::wdl_score(wdl))
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Probe DTZ at the root.  A successful result is a complete one-move
+    /// search result; otherwise the normal search runs.
+    fn probe_tb_root(&mut self) -> Option<SearchResult> {
+        let max = self.tablebase_pieces();
+        if max == 0 || self.piece_all().count_ones() as usize > max {
+            return None;
+        }
+        let st = self.pos.data[self.pos.cur];
+        if st.castle_flags != 0 {
+            return None;
+        }
+        let (white, black, kings, queens, rooks, bishops, knights, pawns) = self.tb_pieces();
+        let turn = st.turn as usize == WHITE;
+        let ep = st.ep_square as u32;
+        let tb = self.tablebases.as_ref()?;
+        let result = tb
+            .probe_root(
+                white,
+                black,
+                kings,
+                queens,
+                rooks,
+                bishops,
+                knights,
+                pawns,
+                st.ply as u32,
+                ep,
+                turn,
+            )
+            .ok()?;
+        let dtz = crate::tablebase::root_dtz(result.root)?;
+        let mv = crate::tablebase::root_move(&dtz)?;
+        let score = crate::tablebase::wdl_score(dtz.wdl);
+        self.pos.tb_hits += 1;
+        let info = Info {
+            multipv: 0,
+            depth: 1,
+            sel_depth: 1,
+            score,
+            nodes: 1,
+            tb_hits: self.pos.tb_hits,
+            time_ms: 1,
+            pv: vec![mv],
+        };
+        self.reporter.pv(&info);
+        Some(SearchResult {
+            best_move: mv,
+            ponder_move: 0,
+            score,
+            nodes: 1,
+            depth: 1,
+            sel_depth: 1,
+            pv: vec![mv],
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Hash table access
 // ---------------------------------------------------------------------------
 
@@ -3304,7 +3409,14 @@ impl Engine {
                         }
                     }
                 }
-                // Tablebases intentionally omitted.
+                if hash_depth < 0 && depth >= self.settings.syzygy_probe_depth as i32 {
+                    if let Some(value) = self.probe_tb_wdl() {
+                        let tb_depth = (depth + 6).min(127);
+                        self.hash_high(value, tb_depth);
+                        self.hash_low(0, value, tb_depth);
+                        return value;
+                    }
+                }
                 if depth >= 20 {
                     if let Some(idx) = self.probe_pv_hash() {
                         let e = self.pv_hash.load(idx);
@@ -3714,7 +3826,14 @@ impl Engine {
                     }
                 }
             }
-            // Tablebases intentionally omitted.
+            if hash_depth < 0 && depth >= self.settings.syzygy_probe_depth as i32 {
+                if let Some(value) = self.probe_tb_wdl() {
+                    let tb_depth = (depth + 6).min(127);
+                    self.hash_high(value, tb_depth);
+                    self.hash_low(0, value, tb_depth);
+                    return value;
+                }
+            }
             if hash_depth >= depth && hash_value > -EVAL_VALUE {
                 score = i32::min(beta - 1, i32::max(score, hash_value));
             }
@@ -3995,7 +4114,14 @@ impl Engine {
                 }
             }
         }
-        // Tablebases intentionally omitted.
+        if hash_depth < 0 && depth >= self.settings.syzygy_probe_depth as i32 {
+            if let Some(value) = self.probe_tb_wdl() {
+                let tb_depth = (depth + 6).min(127);
+                self.hash_high(value, tb_depth);
+                self.hash_low(0, value, tb_depth);
+                return value;
+            }
+        }
         if root {
             hash_move = self.root_list[0];
             hash_value = self.previous;
@@ -4780,6 +4906,9 @@ impl Engine {
 
     /// Run a search to completion; uses Lazy SMP when `Threads` > 1.
     pub fn go(&mut self, limits: &SearchLimits) -> SearchResult {
+        if let Some(result) = self.probe_tb_root() {
+            return result;
+        }
         let threads = self.settings.num_threads.clamp(1, 256);
         if threads <= 1 {
             self.shared_nodes.store(0, Ordering::Relaxed);
@@ -4885,6 +5014,16 @@ mod extra_search_tests {
         assert_eq!(move_to_string(r.best_move), "a1a8");
         assert_eq!(kind, "mate");
         assert!(value >= 1, "mate score {kind} {value}");
+    }
+
+    #[test]
+    fn tablebase_wdl_probe_is_used_by_search() {
+        let mut e = Engine::with_hash_mb(1);
+        let path = format!("{}/tests/fixtures/syzygy", env!("CARGO_MANIFEST_DIR"));
+        e.set_syzygy_path(&path).unwrap();
+        e.get_board("8/8/8/8/8/8/Q7/K1k5 w - - 0 1");
+        assert_eq!(e.probe_tb_wdl(), Some(TB_MATE_VALUE));
+        assert_eq!(e.search(WHITE, false, 0, 4, 0), TB_MATE_VALUE);
     }
 
     #[test]

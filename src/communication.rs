@@ -41,8 +41,16 @@ impl Reporter for UciReporter {
             info.nodes.saturating_mul(1000) / info.time_ms
         };
         println!(
-            "info depth {} seldepth {} score {} {} nodes {} nps {} time {} pv {}",
-            info.depth, info.sel_depth, kind, value, info.nodes, nps, info.time_ms, pv
+            "info depth {} seldepth {} score {} {} nodes {} nps {} tbhits {} time {} pv {}",
+            info.depth,
+            info.sel_depth,
+            kind,
+            value,
+            info.nodes,
+            nps,
+            info.tb_hits,
+            info.time_ms,
+            pv
         );
         let _ = io::stdout().flush();
     }
@@ -77,6 +85,8 @@ pub fn run() {
                 println!("id author Gull contributors");
                 println!("option name Hash type spin default 128 min 1 max 32768");
                 println!("option name Threads type spin default 1 min 1 max 256");
+                println!("option name SyzygyPath type string default <empty>");
+                println!("option name SyzygyProbeDepth type spin default 1 min 0 max 64");
                 println!("uciok");
             }
             "isready" => println!("readyok"),
@@ -92,6 +102,27 @@ pub fn run() {
                     } else if name.eq_ignore_ascii_case("Threads") {
                         if let (Some(e), Ok(n)) = (engine.as_mut(), value.parse::<usize>()) {
                             e.set_threads(n);
+                            restart = was_running;
+                        }
+                    } else if name.eq_ignore_ascii_case("SyzygyPath") {
+                        if let Some(e) = engine.as_mut() {
+                            match e.set_syzygy_path(&value) {
+                                Ok(0) => {
+                                    println!("info string Syzygy tablebases disabled");
+                                    restart = was_running;
+                                }
+                                Ok(n) => {
+                                    println!("info string Syzygy tablebases loaded: {n} pieces");
+                                    restart = was_running;
+                                }
+                                Err(err) => {
+                                    println!("info string Syzygy load failed: {err}");
+                                }
+                            }
+                        }
+                    } else if name.eq_ignore_ascii_case("SyzygyProbeDepth") {
+                        if let (Some(e), Ok(n)) = (engine.as_mut(), value.parse::<i32>()) {
+                            e.settings.syzygy_probe_depth = n.clamp(0, 64) as usize;
                             restart = was_running;
                         }
                     }
@@ -197,7 +228,7 @@ fn print_bestmove(result: &SearchResult) {
     let _ = io::stdout().flush();
 }
 
-fn parse_option<'a>(tokens: &'a [&'a str]) -> Option<(String, &'a str)> {
+fn parse_option(tokens: &[&str]) -> Option<(String, String)> {
     let name_pos = tokens.iter().position(|t| t.eq_ignore_ascii_case("name"))?;
     let value_pos = tokens
         .iter()
@@ -206,7 +237,7 @@ fn parse_option<'a>(tokens: &'a [&'a str]) -> Option<(String, &'a str)> {
         return None;
     }
     let name = tokens[name_pos + 1..value_pos].join(" ");
-    let value = tokens.get(value_pos + 1).copied().unwrap_or("");
+    let value = tokens[value_pos + 1..].join(" ");
     Some((name, value))
 }
 

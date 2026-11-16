@@ -2,7 +2,7 @@
 name = "gull"
 version = "0.1.0"
 edition = "2021"
-description = "Rust port of the Gull chess engine (Lazy SMP, no tablebases)"
+description = "Rust port of the Gull chess engine (Lazy SMP, Syzygy tablebases)"
 license = "MIT"
 
 [[bin]]
@@ -16,3 +16,6 @@ codegen-units = 1
 
 [profile.test]
 opt-level = 2
+
+[dependencies]
+pyrrhic-rs = "0.2.0"

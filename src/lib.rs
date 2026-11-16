@@ -13,13 +13,14 @@
 //! Supporting modules [`types`], [`tables`] and [`position`] provide the
 //! board representation, move encoding and the pre-computed data tables.
 //!
-//! The port implements Lazy SMP (up to 256 threads) and does not include
-//! tablebase support.
+//! The port implements Lazy SMP (up to 256 threads) and pure-Rust Syzygy
+//! tablebase probing.
 
 pub mod communication;
 pub mod evaluation;
 pub mod position;
 pub mod search;
+pub mod tablebase;
 pub mod tables;
 pub mod types;
 

@@ -23,8 +23,9 @@ Supporting modules:
 This version is:
 
 * **Lazy SMP multithreading**, configurable from 1 to 256 threads (`Threads`);
-* **without tablebase support** (`TB_LARGEST = 0` equivalent);
-* dependency-free (no external crates).
+* **Syzygy tablebase support** using the pure-Rust `pyrrhic-rs` probe library
+  (vendored in `vendor/`, no C/C++ code);
+* no network access or external build tools required when building normally.
 
 ## Building and running
 
@@ -49,9 +50,13 @@ quit
 ```
 
 `stop`, `ponderhit`, `ucinewgame`, `setoption name Hash value N`,
-`setoption name Threads value N` and `position startpos|fen ... moves ...` are
-supported.  Threads share the transposition and PV hash tables; each worker
-keeps private position state, history, refutation and pawn-hash tables.
+`setoption name Threads value N`, `setoption name SyzygyPath value <path>`,
+`setoption name SyzygyProbeDepth value N` and
+`position startpos|fen ... moves ...` are supported.  Threads share the
+transposition, PV and tablebase handles; each worker keeps private position
+state, history, refutation and pawn-hash tables.  Syzygy paths are
+colon-separated directories.  Positions with castling rights are not probed,
+matching the C++ reference.
 
 ## Tests
 
@@ -71,6 +76,8 @@ The test suite includes:
   multithreaded start/stop.
 * `tests/smp.rs` — Lazy SMP search, shared-TT visibility/concurrency,
   start/stop and 256-thread configuration tests.
+* `tests/tablebase.rs` — pure-Rust adapter/attack-table checks, KQvK WDL/DTZ
+  root probing, path management and tablebase sharing across workers.
 * `tests/position_setup.rs` — applying UCI moves and searching from the
   resulting root.
 * Unit tests for move generation, SEE, make/unmake, hashing, evaluation and
@@ -101,4 +108,6 @@ long algebraic notation.
 ## License
 
 The original Gull 3 source is public domain.  New Rust code is released under
-the MIT License; see `LICENSE`.
+the MIT License; see `LICENSE`.  Vendored dependencies retain their own
+licenses: `pyrrhic-rs` is MIT, `memmap2` is MIT/Apache-2.0 and `libc` is
+MIT/Apache-2.0.
