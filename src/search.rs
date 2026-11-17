@@ -29,8 +29,8 @@ pub const EXCL_DOUBLE: i32 = 16;
 pub const EXCL_SINGLE_PV: i32 = 8;
 pub const EXCL_DOUBLE_PV: i32 = 16;
 
-pub const REF_ONE_SCORE: i32 = (0xFF << 16) | (3 << 24);
-pub const REF_TWO_SCORE: i32 = (0xFF << 16) | (2 << 24);
+pub const REFUTATION_ONE_SCORE: i32 = (0xFF << 16) | (3 << 24);
+pub const REFUTATION_TWO_SCORE: i32 = (0xFF << 16) | (2 << 24);
 pub const KILLER_ONE_SCORE: i32 = (0xFF << 16) | (1 << 24);
 pub const KILLER_TWO_SCORE: i32 = 0xFF << 16;
 
@@ -61,26 +61,26 @@ pub struct SearchInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchStats {
     pub depth: i32,
-    pub sel_depth: i32,
+    pub selective_depth: i32,
     pub best_move: i32,
     pub best_score: i32,
-    pub id: i32,
+    pub thread_id: i32,
     pub stop: bool,
     pub new_game: bool,
-    pub pv: [i32; 64],
+    pub principal_variation: [i32; 64],
 }
 
 impl Default for SearchStats {
     fn default() -> Self {
         SearchStats {
             depth: 0,
-            sel_depth: 0,
+            selective_depth: 0,
             best_move: 0,
             best_score: 0,
-            id: 0,
+            thread_id: 0,
             stop: false,
             new_game: false,
-            pv: [0; 64],
+            principal_variation: [0; 64],
         }
     }
 }
@@ -149,22 +149,22 @@ impl SearchControl {
 /// Information handed to a [`Reporter`] when a PV is to be printed.
 #[derive(Clone, Debug, Default)]
 pub struct Info {
-    /// MultiPV index (1-based); `0` for a normal single-PV search.
+    /// MultiPV index (1-based); `0` for a normal has_single_bit-PV search.
     pub multipv: usize,
     pub depth: i32,
-    pub sel_depth: i32,
+    pub selective_depth: i32,
     pub score: i32,
     pub nodes: u64,
-    pub tb_hits: u64,
+    pub tablebase_hits: u64,
     pub time_ms: u64,
-    pub pv: Vec<i32>,
+    pub principal_variation: Vec<i32>,
 }
 
 /// Output sink used by the search.  The UCI layer implements this trait.
 pub trait Reporter: Send {
     fn info_depth(&mut self, _depth: i32) {}
     fn curr_move(&mut self, _mv: i32, _cnt: i32, _time_ms: u64, _nodes: u64) {}
-    fn pv(&mut self, _info: &Info) {}
+    fn principal_variation(&mut self, _info: &Info) {}
 }
 
 /// Discards all search output.
@@ -179,8 +179,8 @@ pub struct SearchResult {
     pub score: i32,
     pub nodes: u64,
     pub depth: i32,
-    pub sel_depth: i32,
-    pub pv: Vec<i32>,
+    pub selective_depth: i32,
+    pub principal_variation: Vec<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -227,12 +227,12 @@ impl SearchLimits {
 }
 
 #[inline(always)]
-fn hash_key_low(key: u64) -> u32 {
+fn transposition_key_low(key: u64) -> u32 {
     key as u32
 }
 
 #[inline(always)]
-fn hash_key_high(key: u64) -> u32 {
+fn transposition_key_high(key: u64) -> u32 {
     (key >> 32) as u32
 }
 
@@ -240,29 +240,29 @@ impl Engine {
     // -- evaluation / check helpers ----------------------------------------
 
     #[inline(always)]
-    pub fn check(&self, me: Color) -> bool {
-        (self.pos.data[self.pos.cur].att[opp(me)] & self.king(me)) != 0
+    pub fn check(&self, color: Color) -> bool {
+        (self.pos.states[self.pos.current].attacks[opponent(color)] & self.king(color)) != 0
     }
 
-    /// `IsIllegal(me, move)` from the C++ source.
+    /// `IsIllegal(color, move)` from the C++ source.
     #[inline(always)]
-    pub fn is_illegal(&self, me: Color, mv: Move) -> bool {
-        let from = move_from(mv);
-        let to = move_to(mv);
-        let st = &self.pos.data[self.pos.cur];
-        if (st.xray[opp(me)] & bit(from)) != 0
-            && (bit(to) & self.tables.full_line[lsb(self.king(me))][from]) == 0
+    pub fn is_illegal(&self, color: Color, chess_move: Move) -> bool {
+        let from = move_from(chess_move);
+        let to = move_to(chess_move);
+        let state = &self.pos.states[self.pos.current];
+        if (state.xray_attacks[opponent(color)] & bit(from)) != 0
+            && (bit(to) & self.tables.full_line[least_significant_bit(self.king(color))][from]) == 0
         {
             return true;
         }
-        if is_ep(mv) {
-            let ks = lsb(self.king(me));
-            if (self.tables.line[rank(from)] & self.king(me)) != 0
-                && (self.tables.line[rank(from)] & self.major(opp(me))) != 0
+        if is_en_passant(chess_move) {
+            let ks = least_significant_bit(self.king(color));
+            if (self.tables.line[rank(from)] & self.king(color)) != 0
+                && (self.tables.line[rank(from)] & self.major(opponent(color))) != 0
             {
-                let cap_sq = (st.ep_square as i32 - Self::push(me)) as usize;
-                let occ = self.piece_all() ^ bit(from) ^ bit(cap_sq);
-                if (self.tables.rook_attacks(ks, occ) & self.major(opp(me))) != 0 {
+                let cap_sq = (state.en_passant_square as i32 - Self::push(color)) as usize;
+                let occupancy = self.piece_all() ^ bit(from) ^ bit(cap_sq);
+                if (self.tables.rook_attacks(ks, occupancy) & self.major(opponent(color))) != 0 {
                     return true;
                 }
             }
@@ -270,18 +270,18 @@ impl Engine {
         false
     }
 
-    /// `is_legal<me>` from the C++ source.
+    /// `is_legal<color>` from the C++ source.
     #[inline(always)]
-    pub fn is_legal(&mut self, me: Color, mv: Move) -> bool {
-        let from = move_from(mv);
-        let to = move_to(mv);
-        let piece = self.pos.board.square[from] as usize;
-        let capture = self.pos.board.square[to] as usize;
-        let st = &self.pos.data[self.pos.cur];
+    pub fn is_legal(&mut self, color: Color, chess_move: Move) -> bool {
+        let from = move_from(chess_move);
+        let to = move_to(chess_move);
+        let piece = self.pos.board.squares[from] as usize;
+        let capture = self.pos.board.squares[to] as usize;
+        let state = &self.pos.states[self.pos.current];
         if piece == 0 {
             return false;
         }
-        if (piece & 1) != st.turn as usize {
+        if (piece & 1) != state.side_to_move as usize {
             return false;
         }
         if capture != 0 {
@@ -292,127 +292,127 @@ impl Engine {
                 return false;
             }
         }
-        let occ = self.piece_all();
+        let occupancy = self.piece_all();
         let u = bit(to);
-        if piece >= WHITE_LIGHT && piece < WHITE_KING {
-            if (self.tables.q_mask[from] & u) == 0 {
+        if piece >= WHITE_LIGHT_BISHOP && piece < WHITE_KING {
+            if (self.tables.queen_attack_mask[from] & u) == 0 {
                 return false;
             }
-            if (self.tables.between[from][to] & occ) != 0 {
+            if (self.tables.between[from][to] & occupancy) != 0 {
                 return false;
             }
         }
-        if is_ep(mv) {
+        if is_en_passant(chess_move) {
             if piece >= WHITE_KNIGHT {
                 return false;
             }
-            if st.ep_square as usize != to {
+            if state.en_passant_square as usize != to {
                 return false;
             }
             return true;
         }
-        if is_castling(mv) && self.pos.board.square[from] < WHITE_KING as u8 {
+        if is_castling(chess_move) && self.pos.board.squares[from] < WHITE_KING as u8 {
             return false;
         }
-        if is_promotion(mv) && self.pos.board.square[from] >= WHITE_KNIGHT as u8 {
+        if is_promotion(chess_move) && self.pos.board.squares[from] >= WHITE_KNIGHT as u8 {
             return false;
         }
-        if piece == ipawn(me) {
-            if (u & self.tables.p_move[me][from]) != 0 {
+        if piece == pawn_piece(color) {
+            if (u & self.tables.pawn_moves[color][from]) != 0 {
                 if capture != 0 {
                     return false;
                 }
-                if (u & self.line(me, 7)) != 0 && !is_promotion(mv) {
+                if (u & self.line(color, 7)) != 0 && !is_promotion(chess_move) {
                     return false;
                 }
                 return true;
-            } else if to as i32 == from as i32 + 2 * Self::push(me) {
+            } else if to as i32 == from as i32 + 2 * Self::push(color) {
                 if capture != 0 {
                     return false;
                 }
-                if self.pos.board.square[(to as i32 - Self::push(me)) as usize] != 0 {
+                if self.pos.board.squares[(to as i32 - Self::push(color)) as usize] != 0 {
                     return false;
                 }
-                if (u & self.line(me, 3)) == 0 {
+                if (u & self.line(color, 3)) == 0 {
                     return false;
                 }
                 return true;
-            } else if (u & self.tables.p_att[me][from]) != 0 {
+            } else if (u & self.tables.pawn_attacks[color][from]) != 0 {
                 if capture == 0 {
                     return false;
                 }
-                if (u & self.line(me, 7)) != 0 && !is_promotion(mv) {
+                if (u & self.line(color, 7)) != 0 && !is_promotion(chess_move) {
                     return false;
                 }
                 return true;
             } else {
                 return false;
             }
-        } else if piece == iking(me) {
-            if me == WHITE {
-                if is_castling(mv) {
+        } else if piece == king_piece(color) {
+            if color == WHITE {
+                if is_castling(chess_move) {
                     if (u & 0x40) != 0 {
-                        if (st.castle_flags & CAN_CASTLE_OO) == 0 {
+                        if (state.castling_rights & CASTLING_WHITE_KINGSIDE) == 0 {
                             return false;
                         }
-                        if (occ & 0x60) != 0 {
+                        if (occupancy & 0x60) != 0 {
                             return false;
                         }
-                        if (st.att[BLACK] & 0x70) != 0 {
+                        if (state.attacks[BLACK] & 0x70) != 0 {
                             return false;
                         }
                     } else {
-                        if (st.castle_flags & CAN_CASTLE_OOO) == 0 {
+                        if (state.castling_rights & CASTLING_WHITE_QUEENSIDE) == 0 {
                             return false;
                         }
-                        if (occ & 0xE) != 0 {
+                        if (occupancy & 0xE) != 0 {
                             return false;
                         }
-                        if (st.att[BLACK] & 0x1C) != 0 {
+                        if (state.attacks[BLACK] & 0x1C) != 0 {
                             return false;
                         }
                     }
                     return true;
                 }
-            } else if is_castling(mv) {
+            } else if is_castling(chess_move) {
                 if (u & 0x4000_0000_0000_0000) != 0 {
-                    if (st.castle_flags & CAN_CASTLE_oo) == 0 {
+                    if (state.castling_rights & CASTLING_BLACK_KINGSIDE) == 0 {
                         return false;
                     }
-                    if (occ & 0x6000_0000_0000_0000) != 0 {
+                    if (occupancy & 0x6000_0000_0000_0000) != 0 {
                         return false;
                     }
-                    if (st.att[WHITE] & 0x7000_0000_0000_0000) != 0 {
+                    if (state.attacks[WHITE] & 0x7000_0000_0000_0000) != 0 {
                         return false;
                     }
                 } else {
-                    if (st.castle_flags & CAN_CASTLE_ooo) == 0 {
+                    if (state.castling_rights & CASTLING_BLACK_QUEENSIDE) == 0 {
                         return false;
                     }
-                    if (occ & 0x0E00_0000_0000_0000) != 0 {
+                    if (occupancy & 0x0E00_0000_0000_0000) != 0 {
                         return false;
                     }
-                    if (st.att[WHITE] & 0x1C00_0000_0000_0000) != 0 {
+                    if (state.attacks[WHITE] & 0x1C00_0000_0000_0000) != 0 {
                         return false;
                     }
                 }
                 return true;
             }
-            if (self.tables.s_area[from] & u) == 0 {
+            if (self.tables.king_attack_area[from] & u) == 0 {
                 return false;
             }
-            if (st.att[opp(me)] & u) != 0 {
+            if (state.attacks[opponent(color)] & u) != 0 {
                 return false;
             }
             return true;
         }
         let pt = (piece >> 1) - 2;
         let legal = if pt == 0 {
-            (u & self.tables.n_att[from]) != 0
+            (u & self.tables.knight_attacks[from]) != 0
         } else if pt <= 2 {
-            (self.tables.b_mask[from] & u) != 0
+            (self.tables.bishop_attack_mask[from] & u) != 0
         } else if pt == 3 {
-            (self.tables.r_mask[from] & u) != 0
+            (self.tables.rook_attack_mask[from] & u) != 0
         } else {
             true
         };
@@ -420,58 +420,60 @@ impl Engine {
             return false;
         }
         // Full legality check: king must not be in check after the move.
-        self.do_move(me, mv);
+        self.make_move(color, chess_move);
         self.evaluate();
-        let in_check = if me == WHITE {
-            (self.pos.data[self.pos.cur].att[BLACK] & self.king(WHITE)) != 0
+        let in_check = if color == WHITE {
+            (self.pos.states[self.pos.current].attacks[BLACK] & self.king(WHITE)) != 0
         } else {
-            (self.pos.data[self.pos.cur].att[WHITE] & self.king(BLACK)) != 0
+            (self.pos.states[self.pos.current].attacks[WHITE] & self.king(BLACK)) != 0
         };
-        self.undo_move(me, mv);
+        self.unmake_move(color, chess_move);
         !in_check
     }
 
-    /// `is_check<me>`: does not detect castling or en-passant checks.
+    /// `is_check<color>`: does not detect castling or en-passant checks.
     #[inline(always)]
-    pub fn is_check(&self, me: Color, mv: Move) -> bool {
-        let from = move_from(mv);
-        let to = move_to(mv);
-        let king = self.king(opp(me));
-        let king_sq = lsb(king);
-        let piece = self.pos.board.square[from] as usize;
-        let st = &self.pos.data[self.pos.cur];
-        if (bit(from) & st.xray[me]) != 0 && (self.tables.full_line[king_sq][from] & bit(to)) == 0 {
+    pub fn is_check(&self, color: Color, chess_move: Move) -> bool {
+        let from = move_from(chess_move);
+        let to = move_to(chess_move);
+        let king = self.king(opponent(color));
+        let king_square = least_significant_bit(king);
+        let piece = self.pos.board.squares[from] as usize;
+        let state = &self.pos.states[self.pos.current];
+        if (bit(from) & state.xray_attacks[color]) != 0
+            && (self.tables.full_line[king_square][from] & bit(to)) == 0
+        {
             return true;
         }
         if piece < WHITE_KNIGHT {
-            if (self.tables.p_att[me][to] & king) != 0 {
+            if (self.tables.pawn_attacks[color][to] & king) != 0 {
                 return true;
             }
-            if (bit(to) & self.line(me, 7)) != 0
-                && (king & self.line(me, 7)) != 0
-                && (self.tables.between[to][king_sq] & self.piece_all()) == 0
+            if (bit(to) & self.line(color, 7)) != 0
+                && (king & self.line(color, 7)) != 0
+                && (self.tables.between[to][king_square] & self.piece_all()) == 0
             {
                 return true;
             }
-        } else if piece < WHITE_LIGHT {
-            if (self.tables.n_att[to] & king) != 0 {
+        } else if piece < WHITE_LIGHT_BISHOP {
+            if (self.tables.knight_attacks[to] & king) != 0 {
                 return true;
             }
         } else if piece < WHITE_ROOK {
-            if (self.tables.b_mask[to] & king) != 0
-                && (self.tables.between[king_sq][to] & self.piece_all()) == 0
+            if (self.tables.bishop_attack_mask[to] & king) != 0
+                && (self.tables.between[king_square][to] & self.piece_all()) == 0
             {
                 return true;
             }
         } else if piece < WHITE_QUEEN {
-            if (self.tables.r_mask[to] & king) != 0
-                && (self.tables.between[king_sq][to] & self.piece_all()) == 0
+            if (self.tables.rook_attack_mask[to] & king) != 0
+                && (self.tables.between[king_square][to] & self.piece_all()) == 0
             {
                 return true;
             }
         } else if piece < WHITE_KING {
-            if (self.tables.q_mask[to] & king) != 0
-                && (self.tables.between[king_sq][to] & self.piece_all()) == 0
+            if (self.tables.queen_attack_mask[to] & king) != 0
+                && (self.tables.between[king_square][to] & self.piece_all()) == 0
             {
                 return true;
             }
@@ -482,20 +484,20 @@ impl Engine {
     /// Direct attack test used by the legal-move helper and tests.
     #[inline(always)]
     pub fn is_square_attacked(&self, s: Square, by: Color) -> bool {
-        let occ = self.piece_all();
-        if (self.tables.p_att[opp(by)][s] & self.pawn(by)) != 0 {
+        let occupancy = self.piece_all();
+        if (self.tables.pawn_attacks[opponent(by)][s] & self.pawn(by)) != 0 {
             return true;
         }
-        if (self.tables.n_att[s] & self.knight(by)) != 0 {
+        if (self.tables.knight_attacks[s] & self.knight(by)) != 0 {
             return true;
         }
-        if (self.tables.s_area[s] & self.king(by)) != 0 {
+        if (self.tables.king_attack_area[s] & self.king(by)) != 0 {
             return true;
         }
-        if (self.tables.bishop_attacks(s, occ) & self.bslider(by)) != 0 {
+        if (self.tables.bishop_attacks(s, occupancy) & self.bslider(by)) != 0 {
             return true;
         }
-        if (self.tables.rook_attacks(s, occ) & self.rslider(by)) != 0 {
+        if (self.tables.rook_attacks(s, occupancy) & self.rslider(by)) != 0 {
             return true;
         }
         false
@@ -508,8 +510,8 @@ impl Engine {
 
 impl Engine {
     #[inline(always)]
-    fn add_move(list: &mut [i32], count: &mut usize, mv: i32) {
-        list[*count] = mv;
+    fn add_move(list: &mut [i32], count: &mut usize, chess_move: i32) {
+        list[*count] = chess_move;
         *count += 1;
     }
 
@@ -528,214 +530,227 @@ impl Engine {
 
     #[inline(always)]
 
-    /// `gen_captures<me>`: returns the end index (exclusive of the 0
+    /// `generate_captures<color>`: returns the end index (exclusive of the 0
     /// terminator).
-    pub fn gen_captures(&mut self, me: Color) -> usize {
-        let t = self.tables;
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
-        let list =
-            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+    pub fn generate_captures(&mut self, color: Color) -> usize {
+        let tables = self.tables;
+        let current = self.pos.current;
+        let state = self.pos.states[current];
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[current].as_mut_ptr(), MAX_MOVES)
+        };
         let mut n = 0usize;
-        let oppc = opp(me);
-        let mask = st.mask;
+        let opponent_color = opponent(color);
+        let mask = state.move_mask;
         let mut v;
         let mut u;
 
-        if st.ep_square != 0 {
-            let mut vv = t.p_att[oppc][st.ep_square as usize] & self.pawn(me);
+        if state.en_passant_square != 0 {
+            let mut vv = tables.pawn_attacks[opponent_color][state.en_passant_square as usize]
+                & self.pawn(color);
             while vv != 0 {
-                let from = lsb(vv);
-                cut(&mut vv);
+                let from = least_significant_bit(vv);
+                clear_lowest_bit(&mut vv);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
-                    st.ep_square as usize,
-                    FLAG_EP,
-                    t.mvv_lva[ipawn(me)][ipawn(oppc)],
+                    state.en_passant_square as usize,
+                    FLAG_EN_PASSANT,
+                    tables.mvv_lva[pawn_piece(color)][pawn_piece(opponent_color)],
                 );
             }
         }
-        let mut uu = self.pawn(me) & self.line(me, 6);
+        let mut uu = self.pawn(color) & self.line(color, 6);
         while uu != 0 {
-            let from = lsb(uu);
-            cut(&mut uu);
-            let to = (from as i32 + Self::push(me)) as usize;
-            if self.pos.board.square[to] == 0 {
+            let from = least_significant_bit(uu);
+            clear_lowest_bit(&mut uu);
+            let to = (from as i32 + Self::push(color)) as usize;
+            if self.pos.board.squares[to] == 0 {
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
-                    FLAG_P_QUEEN,
-                    t.mvv_lva[WHITE_QUEEN][BLACK_QUEEN],
+                    FLAG_PROMOTION_QUEEN,
+                    tables.mvv_lva[WHITE_QUEEN][BLACK_QUEEN],
                 );
-                if (t.n_att[lsb(self.king(oppc))] & bit(to)) != 0 {
+                if (tables.knight_attacks[least_significant_bit(self.king(opponent_color))]
+                    & bit(to))
+                    != 0
+                {
                     Self::add_move_score(
                         list,
                         &mut n,
                         from,
                         to,
-                        FLAG_P_KNIGHT,
-                        t.mvv_lva[WHITE_KNIGHT][BLACK_KNIGHT],
+                        FLAG_PROMOTION_KNIGHT,
+                        tables.mvv_lva[WHITE_KNIGHT][BLACK_KNIGHT],
                     );
                 }
             }
         }
-        v = Self::shift_w(oppc, mask) & self.pawn(me) & self.line(me, 6);
+        v = Self::shift_west(opponent_color, mask) & self.pawn(color) & self.line(color, 6);
         while v != 0 {
-            let from = lsb(v);
-            cut(&mut v);
-            let to = (from as i32 + Self::push_e(me)) as usize;
-            let cap = self.pos.board.square[to] as usize;
-            let score = t.mvv_lva[promotion_capture_piece(cap)][BLACK_QUEEN];
-            Self::add_move_score(list, &mut n, from, to, FLAG_P_QUEEN, score);
-            if (t.n_att[lsb(self.king(oppc))] & bit(to)) != 0 {
+            let from = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            let to = (from as i32 + Self::push_east(color)) as usize;
+            let cap = self.pos.board.squares[to] as usize;
+            let score = tables.mvv_lva[promotion_capture_piece(cap)][BLACK_QUEEN];
+            Self::add_move_score(list, &mut n, from, to, FLAG_PROMOTION_QUEEN, score);
+            if (tables.knight_attacks[least_significant_bit(self.king(opponent_color))] & bit(to))
+                != 0
+            {
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
-                    FLAG_P_KNIGHT,
-                    t.mvv_lva[WHITE_KING][cap],
+                    FLAG_PROMOTION_KNIGHT,
+                    tables.mvv_lva[WHITE_KING][cap],
                 );
             }
         }
-        v = Self::shift_e(oppc, mask) & self.pawn(me) & self.line(me, 6);
+        v = Self::shift_east(opponent_color, mask) & self.pawn(color) & self.line(color, 6);
         while v != 0 {
-            let from = lsb(v);
-            cut(&mut v);
-            let to = (from as i32 + Self::push_w(me)) as usize;
-            let cap = self.pos.board.square[to] as usize;
-            let score = t.mvv_lva[promotion_capture_piece(cap)][BLACK_QUEEN];
-            Self::add_move_score(list, &mut n, from, to, FLAG_P_QUEEN, score);
-            if (t.n_att[lsb(self.king(oppc))] & bit(to)) != 0 {
+            let from = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            let to = (from as i32 + Self::push_west(color)) as usize;
+            let cap = self.pos.board.squares[to] as usize;
+            let score = tables.mvv_lva[promotion_capture_piece(cap)][BLACK_QUEEN];
+            Self::add_move_score(list, &mut n, from, to, FLAG_PROMOTION_QUEEN, score);
+            if (tables.knight_attacks[least_significant_bit(self.king(opponent_color))] & bit(to))
+                != 0
+            {
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
-                    FLAG_P_KNIGHT,
-                    t.mvv_lva[WHITE_KING][cap],
+                    FLAG_PROMOTION_KNIGHT,
+                    tables.mvv_lva[WHITE_KING][cap],
                 );
             }
         }
-        if (st.att[me] & mask) == 0 {
+        if (state.attacks[color] & mask) == 0 {
             list[n] = 0;
             return n;
         }
-        v = Self::shift_w(oppc, mask) & self.pawn(me) & !self.line(me, 6);
+        v = Self::shift_west(opponent_color, mask) & self.pawn(color) & !self.line(color, 6);
         while v != 0 {
-            let from = lsb(v);
-            cut(&mut v);
+            let from = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
             Self::add_move_score(
                 list,
                 &mut n,
                 from,
-                (from as i32 + Self::push_e(me)) as usize,
+                (from as i32 + Self::push_east(color)) as usize,
                 0,
-                t.mvv_lva[ipawn(me)]
-                    [self.pos.board.square[(from as i32 + Self::push_e(me)) as usize] as usize],
+                tables.mvv_lva[pawn_piece(color)][self.pos.board.squares
+                    [(from as i32 + Self::push_east(color)) as usize]
+                    as usize],
             );
         }
-        v = Self::shift_e(oppc, mask) & self.pawn(me) & !self.line(me, 6);
+        v = Self::shift_east(opponent_color, mask) & self.pawn(color) & !self.line(color, 6);
         while v != 0 {
-            let from = lsb(v);
-            cut(&mut v);
+            let from = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
             Self::add_move_score(
                 list,
                 &mut n,
                 from,
-                (from as i32 + Self::push_w(me)) as usize,
+                (from as i32 + Self::push_west(color)) as usize,
                 0,
-                t.mvv_lva[ipawn(me)]
-                    [self.pos.board.square[(from as i32 + Self::push_w(me)) as usize] as usize],
+                tables.mvv_lva[pawn_piece(color)][self.pos.board.squares
+                    [(from as i32 + Self::push_west(color)) as usize]
+                    as usize],
             );
         }
-        v = t.s_area[lsb(self.king(me))] & mask & !st.att[oppc];
+        v = tables.king_attack_area[least_significant_bit(self.king(color))]
+            & mask
+            & !state.attacks[opponent_color];
         while v != 0 {
-            let to = lsb(v);
-            cut(&mut v);
+            let to = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
             Self::add_move_score(
                 list,
                 &mut n,
-                lsb(self.king(me)),
+                least_significant_bit(self.king(color)),
                 to,
                 0,
-                t.mvv_lva[iking(me)][self.pos.board.square[to] as usize],
+                tables.mvv_lva[king_piece(color)][self.pos.board.squares[to] as usize],
             );
         }
-        u = self.knight(me);
+        u = self.knight(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            v = t.n_att[from] & mask;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            v = tables.knight_attacks[from] & mask;
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[iknight(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[knight_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
         }
-        u = self.bishop(me);
+        u = self.bishop(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            v = t.bishop_attacks(from, self.piece_all()) & mask;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            v = tables.bishop_attacks(from, self.piece_all()) & mask;
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[self.pos.board.square[from] as usize]
-                        [self.pos.board.square[to] as usize],
+                    tables.mvv_lva[self.pos.board.squares[from] as usize]
+                        [self.pos.board.squares[to] as usize],
                 );
             }
         }
-        u = self.rook(me);
+        u = self.rook(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            v = t.rook_attacks(from, self.piece_all()) & mask;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            v = tables.rook_attacks(from, self.piece_all()) & mask;
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[irook(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[rook_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
         }
-        u = self.queen(me);
+        u = self.queen(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            v = t.queen_attacks(from, self.piece_all()) & mask;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            v = tables.queen_attacks(from, self.piece_all()) & mask;
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[iqueen(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[queen_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
         }
@@ -743,29 +758,32 @@ impl Engine {
         n
     }
 
-    /// `gen_evasions<me>`
-    pub fn gen_evasions(&mut self, me: Color) -> usize {
-        let t = self.tables;
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
-        let list =
-            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+    /// `generate_evasions<color>`
+    pub fn generate_evasions(&mut self, color: Color) -> usize {
+        let tables = self.tables;
+        let current = self.pos.current;
+        let state = self.pos.states[current];
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[current].as_mut_ptr(), MAX_MOVES)
+        };
         let mut n = 0usize;
-        let oppc = opp(me);
-        let king = lsb(self.king(me));
-        let mut att = (t.n_att[king] & self.knight(oppc)) | (t.p_att[me][king] & self.pawn(oppc));
-        let mut u = (t.b_mask[king] & self.bslider(oppc)) | (t.r_mask[king] & self.rslider(oppc));
+        let opponent_color = opponent(color);
+        let king = least_significant_bit(self.king(color));
+        let mut attacks = (tables.knight_attacks[king] & self.knight(opponent_color))
+            | (tables.pawn_attacks[color][king] & self.pawn(opponent_color));
+        let mut u = (tables.bishop_attack_mask[king] & self.bslider(opponent_color))
+            | (tables.rook_attack_mask[king] & self.rslider(opponent_color));
         while u != 0 {
-            let s = lsb(u);
+            let s = least_significant_bit(u);
             u ^= bit(s);
-            if (t.between[king][s] & self.piece_all()) == 0 {
-                att |= bit(s);
+            if (tables.between[king][s] & self.piece_all()) == 0 {
+                attacks |= bit(s);
             }
         }
-        if att == 0 {
+        if attacks == 0 {
             let mut sq_bb = [0u64; 16];
             for s in 0..64 {
-                let p = self.pos.board.square[s] as usize;
+                let p = self.pos.board.squares[s] as usize;
                 if p != 0 {
                     sq_bb[p] |= bit(s);
                     sq_bb[p & 1] |= bit(s);
@@ -773,244 +791,250 @@ impl Engine {
             }
             let mut bad = 0;
             for p in 0..16 {
-                if sq_bb[p] != self.pos.board.bb[p] {
+                if sq_bb[p] != self.pos.board.bitboards[p] {
                     eprintln!(
-                        "piece {} bb {:x} squares {:x}",
-                        p, self.pos.board.bb[p], sq_bb[p]
+                        "piece {} bitboards {:x} squares {:x}",
+                        p, self.pos.board.bitboards[p], sq_bb[p]
                     );
                     bad += 1;
                 }
             }
             {
-                let cur = self.pos.cur;
-                let st = self.pos.data[cur];
+                let current = self.pos.current;
+                let state = self.pos.states[current];
                 eprintln!(
-                    "gen_evasions: no checker! me={} turn={} king={} fen={} att={:x} raw_att={:x} attacked={} depth={} bad={} eval_key={:x} key={:x} flags? eval_cached={}",
-                    me,
-                    st.turn,
+                    "generate_evasions: no checker! color={} side_to_move={} king={} fen={} attacks={:x} raw_att={:x} attacked={} depth={} bad={} eval_key={:x} key={:x} flags? eval_cached={}",
+                    color,
+                    state.side_to_move,
                     king,
                     self.to_fen(),
-                    st.att[oppc],
-                    st.att[oppc],
-                    self.is_square_attacked(king, oppc),
+                    state.attacks[opponent_color],
+                    state.attacks[opponent_color],
+                    self.is_square_attacked(king, opponent_color),
                     self.stats.depth,
                     bad,
-                    st.eval_key,
-                    st.key,
-                    st.eval_key == st.key
+                    state.eval_key,
+                    state.key,
+                    state.eval_key == state.key
                 );
-                self.pos.data[cur].eval_key = 0;
+                self.pos.states[current].eval_key = 0;
                 self.evaluate();
                 eprintln!(
-                    "forced eval att={:x} check={}",
-                    self.pos.data[cur].att[oppc],
-                    self.check(me)
+                    "forced eval attacks={:x} check={}",
+                    self.pos.states[current].attacks[opponent_color],
+                    self.check(color)
                 );
             }
             eprintln!("{}", std::backtrace::Backtrace::force_capture());
             list[n] = 0;
             return n;
         }
-        let mut att_sq = lsb(att);
-        let mut esc = t.s_area[king] & !(self.piece(me) | st.att[oppc]) & st.mask;
-        if self.pos.board.square[att_sq] >= WHITE_LIGHT as u8 {
-            esc &= !t.full_line[king][att_sq];
+        let mut attack_square = least_significant_bit(attacks);
+        let mut esc = tables.king_attack_area[king]
+            & !(self.piece(color) | state.attacks[opponent_color])
+            & state.move_mask;
+        if self.pos.board.squares[attack_square] >= WHITE_LIGHT_BISHOP as u8 {
+            esc &= !tables.full_line[king][attack_square];
         }
-        att &= att - 1;
-        if att != 0 {
-            att_sq = lsb(att);
-            if self.pos.board.square[att_sq] >= WHITE_LIGHT as u8 {
-                esc &= !t.full_line[king][att_sq];
+        attacks &= attacks - 1;
+        if attacks != 0 {
+            attack_square = least_significant_bit(attacks);
+            if self.pos.board.squares[attack_square] >= WHITE_LIGHT_BISHOP as u8 {
+                esc &= !tables.full_line[king][attack_square];
             }
             while esc != 0 {
-                let to = lsb(esc);
-                cut(&mut esc);
+                let to = least_significant_bit(esc);
+                clear_lowest_bit(&mut esc);
                 Self::add_move_score(
                     list,
                     &mut n,
                     king,
                     to,
                     0,
-                    t.mvv_lva[iking(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[king_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
             list[n] = 0;
             return n;
         }
-        if (bit(att_sq) & st.mask) != 0 {
-            let ep_sq = att_sq as i32 + Self::push(me);
-            if st.ep_square != 0 && st.ep_square as i32 == ep_sq {
-                let mut v = t.p_att[oppc][ep_sq as usize] & self.pawn(me);
+        if (bit(attack_square) & state.move_mask) != 0 {
+            let en_passant_target = attack_square as i32 + Self::push(color);
+            if state.en_passant_square != 0 && state.en_passant_square as i32 == en_passant_target {
+                let mut v = tables.pawn_attacks[opponent_color][en_passant_target as usize]
+                    & self.pawn(color);
                 while v != 0 {
-                    let from = lsb(v);
-                    cut(&mut v);
+                    let from = least_significant_bit(v);
+                    clear_lowest_bit(&mut v);
                     Self::add_move_score(
                         list,
                         &mut n,
                         from,
-                        ep_sq as usize,
-                        FLAG_EP,
-                        t.mvv_lva[ipawn(me)][ipawn(oppc)],
+                        en_passant_target as usize,
+                        FLAG_EN_PASSANT,
+                        tables.mvv_lva[pawn_piece(color)][pawn_piece(opponent_color)],
                     );
                 }
             }
         }
-        let mut v = t.p_att[oppc][att_sq] & self.pawn(me);
+        let mut v = tables.pawn_attacks[opponent_color][attack_square] & self.pawn(color);
         while v != 0 {
-            let from = lsb(v);
-            cut(&mut v);
-            if (bit(att_sq) & self.line(me, 7)) != 0 {
+            let from = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            if (bit(attack_square) & self.line(color, 7)) != 0 {
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
-                    att_sq,
-                    FLAG_P_QUEEN,
-                    t.mvv_lva[promotion_capture_piece(self.pos.board.square[att_sq] as usize)]
+                    attack_square,
+                    FLAG_PROMOTION_QUEEN,
+                    tables.mvv_lva
+                        [promotion_capture_piece(self.pos.board.squares[attack_square] as usize)]
                         [BLACK_QUEEN],
                 );
-            } else if (bit(att_sq) & st.mask) != 0 {
+            } else if (bit(attack_square) & state.move_mask) != 0 {
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
-                    att_sq,
+                    attack_square,
                     0,
-                    t.mvv_lva[ipawn(me)][self.pos.board.square[att_sq] as usize],
+                    tables.mvv_lva[pawn_piece(color)]
+                        [self.pos.board.squares[attack_square] as usize],
                 );
             }
         }
         while esc != 0 {
-            let to = lsb(esc);
-            cut(&mut esc);
+            let to = least_significant_bit(esc);
+            clear_lowest_bit(&mut esc);
             Self::add_move_score(
                 list,
                 &mut n,
                 king,
                 to,
                 0,
-                t.mvv_lva[iking(me)][self.pos.board.square[to] as usize],
+                tables.mvv_lva[king_piece(color)][self.pos.board.squares[to] as usize],
             );
         }
-        let att = t.between[king][att_sq];
-        v = Self::shift(oppc, att) & self.pawn(me);
+        let attacks = tables.between[king][attack_square];
+        v = Self::shift(opponent_color, attacks) & self.pawn(color);
         while v != 0 {
-            let from = lsb(v);
-            cut(&mut v);
-            if (bit(from) & self.line(me, 6)) != 0 {
+            let from = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            if (bit(from) & self.line(color, 6)) != 0 {
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
-                    (from as i32 + Self::push(me)) as usize,
-                    FLAG_P_QUEEN,
-                    t.mvv_lva[WHITE_QUEEN][BLACK_QUEEN],
+                    (from as i32 + Self::push(color)) as usize,
+                    FLAG_PROMOTION_QUEEN,
+                    tables.mvv_lva[WHITE_QUEEN][BLACK_QUEEN],
                 );
-            } else if st.mask == !0u64 {
+            } else if state.move_mask == !0u64 {
                 // F(~Current->mask) when mask == Filled
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
-                    (from as i32 + Self::push(me)) as usize,
+                    (from as i32 + Self::push(color)) as usize,
                     0,
                     0,
                 );
             }
         }
-        if st.mask == !0u64 {
-            let mut v =
-                Self::shift(oppc, Self::shift(oppc, att)) & self.line(me, 1) & self.pawn(me);
+        if state.move_mask == !0u64 {
+            let mut v = Self::shift(opponent_color, Self::shift(opponent_color, attacks))
+                & self.line(color, 1)
+                & self.pawn(color);
             while v != 0 {
-                let from = lsb(v);
-                cut(&mut v);
-                if self.pos.board.square[(from as i32 + Self::push(me)) as usize] == 0 {
+                let from = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
+                if self.pos.board.squares[(from as i32 + Self::push(color)) as usize] == 0 {
                     Self::add_move(
                         list,
                         &mut n,
-                        ((from as i32) << 6) | (from as i32 + 2 * Self::push(me)),
+                        ((from as i32) << 6) | (from as i32 + 2 * Self::push(color)),
                     );
                 }
             }
         }
-        let att = att | bit(att_sq);
-        let mut u = self.knight(me);
+        let attacks = attacks | bit(attack_square);
+        let mut u = self.knight(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut e = t.n_att[from] & att;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut e = tables.knight_attacks[from] & attacks;
             while e != 0 {
-                let to = lsb(e);
+                let to = least_significant_bit(e);
                 e ^= bit(to);
-                if (bit(to) & st.mask) != 0 {
+                if (bit(to) & state.move_mask) != 0 {
                     Self::add_move_score(
                         list,
                         &mut n,
                         from,
                         to,
                         0,
-                        t.mvv_lva[iknight(me)][self.pos.board.square[to] as usize],
+                        tables.mvv_lva[knight_piece(color)][self.pos.board.squares[to] as usize],
                     );
                 }
             }
         }
-        let mut u = self.bishop(me);
+        let mut u = self.bishop(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut e = t.bishop_attacks(from, self.piece_all()) & att;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut e = tables.bishop_attacks(from, self.piece_all()) & attacks;
             while e != 0 {
-                let to = lsb(e);
+                let to = least_significant_bit(e);
                 e ^= bit(to);
-                if (bit(to) & st.mask) != 0 {
+                if (bit(to) & state.move_mask) != 0 {
                     Self::add_move_score(
                         list,
                         &mut n,
                         from,
                         to,
                         0,
-                        t.mvv_lva[self.pos.board.square[from] as usize]
-                            [self.pos.board.square[to] as usize],
+                        tables.mvv_lva[self.pos.board.squares[from] as usize]
+                            [self.pos.board.squares[to] as usize],
                     );
                 }
             }
         }
-        let mut u = self.rook(me);
+        let mut u = self.rook(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut e = t.rook_attacks(from, self.piece_all()) & att;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut e = tables.rook_attacks(from, self.piece_all()) & attacks;
             while e != 0 {
-                let to = lsb(e);
+                let to = least_significant_bit(e);
                 e ^= bit(to);
-                if (bit(to) & st.mask) != 0 {
+                if (bit(to) & state.move_mask) != 0 {
                     Self::add_move_score(
                         list,
                         &mut n,
                         from,
                         to,
                         0,
-                        t.mvv_lva[irook(me)][self.pos.board.square[to] as usize],
+                        tables.mvv_lva[rook_piece(color)][self.pos.board.squares[to] as usize],
                     );
                 }
             }
         }
-        let mut u = self.queen(me);
+        let mut u = self.queen(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut e = t.queen_attacks(from, self.piece_all()) & att;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut e = tables.queen_attacks(from, self.piece_all()) & attacks;
             while e != 0 {
-                let to = lsb(e);
+                let to = least_significant_bit(e);
                 e ^= bit(to);
-                if (bit(to) & st.mask) != 0 {
+                if (bit(to) & state.move_mask) != 0 {
                     Self::add_move_score(
                         list,
                         &mut n,
                         from,
                         to,
                         0,
-                        t.mvv_lva[iqueen(me)][self.pos.board.square[to] as usize],
+                        tables.mvv_lva[queen_piece(color)][self.pos.board.squares[to] as usize],
                     );
                 }
             }
@@ -1020,321 +1044,352 @@ impl Engine {
     }
 
     pub fn mark_evasions(&mut self) {
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
-        let list =
-            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+        let current = self.pos.current;
+        let state = self.pos.states[current];
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[current].as_mut_ptr(), MAX_MOVES)
+        };
         let mut i = 0;
         while list[i] != 0 {
-            let mv = list[i] & 0xFFFF;
-            if self.pos.board.square[move_to(mv)] == 0 && (mv & 0xE000) == 0 {
-                if mv as u16 == st.refs[0] {
-                    list[i] |= REF_ONE_SCORE;
-                } else if mv as u16 == st.refs[1] {
-                    list[i] |= REF_TWO_SCORE;
-                } else if mv as u16 == st.killer[1] {
+            let chess_move = list[i] & 0xFFFF;
+            if self.pos.board.squares[move_to(chess_move)] == 0 && (chess_move & 0xE000) == 0 {
+                if chess_move as u16 == state.refutation_moves[0] {
+                    list[i] |= REFUTATION_ONE_SCORE;
+                } else if chess_move as u16 == state.refutation_moves[1] {
+                    list[i] |= REFUTATION_TWO_SCORE;
+                } else if chess_move as u16 == state.killer_moves[1] {
                     list[i] |= KILLER_ONE_SCORE;
-                } else if mv as u16 == st.killer[2] {
+                } else if chess_move as u16 == state.killer_moves[2] {
                     list[i] |= KILLER_TWO_SCORE;
                 } else {
-                    list[i] |= self.history_p(self.pos.board.square[move_from(mv)] as usize, mv);
+                    list[i] |= self.history_score(
+                        self.pos.board.squares[move_from(chess_move)] as usize,
+                        chess_move,
+                    );
                 }
             }
             i += 1;
         }
     }
 
-    /// `gen_quiet_moves<me>`
-    pub fn gen_quiet_moves(&mut self, me: Color, start: usize) -> usize {
-        let t = self.tables;
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
-        let list =
-            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+    /// `generate_quiet_moves<color>`
+    pub fn generate_quiet_moves(&mut self, color: Color, start: usize) -> usize {
+        let tables = self.tables;
+        let current = self.pos.current;
+        let state = self.pos.states[current];
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[current].as_mut_ptr(), MAX_MOVES)
+        };
         let mut n = start;
-        let occ = self.piece_all();
-        let free = !occ;
-        if me == WHITE {
-            if (st.castle_flags & CAN_CASTLE_OO) != 0
-                && (occ & 0x60) == 0
-                && (st.att[BLACK] & 0x70) == 0
+        let occupancy = self.piece_all();
+        let free = !occupancy;
+        if color == WHITE {
+            if (state.castling_rights & CASTLING_WHITE_KINGSIDE) != 0
+                && (occupancy & 0x60) == 0
+                && (state.attacks[BLACK] & 0x70) == 0
             {
-                let score = self.history_p(iking(WHITE), ((4 << 6) | 6 | FLAG_CASTLING) as i32);
+                let score =
+                    self.history_score(king_piece(WHITE), ((4 << 6) | 6 | FLAG_CASTLING) as i32);
                 Self::add_move_score(list, &mut n, 4, 6, FLAG_CASTLING, score);
             }
-            if (st.castle_flags & CAN_CASTLE_OOO) != 0
-                && (occ & 0xE) == 0
-                && (st.att[BLACK] & 0x1C) == 0
+            if (state.castling_rights & CASTLING_WHITE_QUEENSIDE) != 0
+                && (occupancy & 0xE) == 0
+                && (state.attacks[BLACK] & 0x1C) == 0
             {
-                let score = self.history_p(iking(WHITE), ((4 << 6) | 2 | FLAG_CASTLING) as i32);
+                let score =
+                    self.history_score(king_piece(WHITE), ((4 << 6) | 2 | FLAG_CASTLING) as i32);
                 Self::add_move_score(list, &mut n, 4, 2, FLAG_CASTLING, score);
             }
         } else {
-            if (st.castle_flags & CAN_CASTLE_oo) != 0
-                && (occ & 0x6000_0000_0000_0000) == 0
-                && (st.att[WHITE] & 0x7000_0000_0000_0000) == 0
+            if (state.castling_rights & CASTLING_BLACK_KINGSIDE) != 0
+                && (occupancy & 0x6000_0000_0000_0000) == 0
+                && (state.attacks[WHITE] & 0x7000_0000_0000_0000) == 0
             {
-                let score = self.history_p(iking(BLACK), ((60 << 6) | 62 | FLAG_CASTLING) as i32);
+                let score =
+                    self.history_score(king_piece(BLACK), ((60 << 6) | 62 | FLAG_CASTLING) as i32);
                 Self::add_move_score(list, &mut n, 60, 62, FLAG_CASTLING, score);
             }
-            if (st.castle_flags & CAN_CASTLE_ooo) != 0
-                && (occ & 0x0E00_0000_0000_0000) == 0
-                && (st.att[WHITE] & 0x1C00_0000_0000_0000) == 0
+            if (state.castling_rights & CASTLING_BLACK_QUEENSIDE) != 0
+                && (occupancy & 0x0E00_0000_0000_0000) == 0
+                && (state.attacks[WHITE] & 0x1C00_0000_0000_0000) == 0
             {
-                let score = self.history_p(iking(BLACK), ((60 << 6) | 58 | FLAG_CASTLING) as i32);
+                let score =
+                    self.history_score(king_piece(BLACK), ((60 << 6) | 58 | FLAG_CASTLING) as i32);
                 Self::add_move_score(list, &mut n, 60, 58, FLAG_CASTLING, score);
             }
         }
-        let mut v = Self::shift(me, self.pawn(me)) & free & !self.line(me, 7);
+        let mut v = Self::shift(color, self.pawn(color)) & free & !self.line(color, 7);
         while v != 0 {
-            let to = lsb(v);
-            cut(&mut v);
-            if (bit(to) & self.line(me, 2)) != 0
-                && self.pos.board.square[(to as i32 + Self::push(me)) as usize] == 0
+            let to = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            if (bit(to) & self.line(color, 2)) != 0
+                && self.pos.board.squares[(to as i32 + Self::push(color)) as usize] == 0
             {
-                let from = (to as i32 - Self::push(me)) as usize;
-                let final_to = (to as i32 + Self::push(me)) as usize;
-                let score =
-                    self.history_p(ipawn(me), (((from as i32) << 6) | final_to as i32) as i32);
+                let from = (to as i32 - Self::push(color)) as usize;
+                let final_to = (to as i32 + Self::push(color)) as usize;
+                let score = self.history_score(
+                    pawn_piece(color),
+                    (((from as i32) << 6) | final_to as i32) as i32,
+                );
                 Self::add_move_score(list, &mut n, from, final_to, 0, score);
             }
-            let from = (to as i32 - Self::push(me)) as usize;
-            let score = self.history_p(ipawn(me), (((from as i32) << 6) | to as i32) as i32);
+            let from = (to as i32 - Self::push(color)) as usize;
+            let score =
+                self.history_score(pawn_piece(color), (((from as i32) << 6) | to as i32) as i32);
             Self::add_move_score(list, &mut n, from, to, 0, score);
         }
-        let mut u = self.knight(me);
+        let mut u = self.knight(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.n_att[from];
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.knight_attacks[from];
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
-                let score = self.history_p(iknight(me), (((from as i32) << 6) | to as i32) as i32);
-                Self::add_move_score(list, &mut n, from, to, 0, score);
-            }
-        }
-        let mut u = self.bishop(me);
-        while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.bishop_attacks(from, occ);
-            while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
-                let score = self.history_p(
-                    self.pos.board.square[from] as usize,
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
+                let score = self.history_score(
+                    knight_piece(color),
                     (((from as i32) << 6) | to as i32) as i32,
                 );
                 Self::add_move_score(list, &mut n, from, to, 0, score);
             }
         }
-        let mut u = self.rook(me);
+        let mut u = self.bishop(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.rook_attacks(from, occ);
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.bishop_attacks(from, occupancy);
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
-                let score = self.history_p(irook(me), (((from as i32) << 6) | to as i32) as i32);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
+                let score = self.history_score(
+                    self.pos.board.squares[from] as usize,
+                    (((from as i32) << 6) | to as i32) as i32,
+                );
                 Self::add_move_score(list, &mut n, from, to, 0, score);
             }
         }
-        let mut u = self.queen(me);
+        let mut u = self.rook(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.queen_attacks(from, occ);
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.rook_attacks(from, occupancy);
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
-                let score = self.history_p(iqueen(me), (((from as i32) << 6) | to as i32) as i32);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
+                let score = self
+                    .history_score(rook_piece(color), (((from as i32) << 6) | to as i32) as i32);
                 Self::add_move_score(list, &mut n, from, to, 0, score);
             }
         }
-        let mut v = t.s_area[lsb(self.king(me))] & free & !st.att[opp(me)];
+        let mut u = self.queen(color);
+        while u != 0 {
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.queen_attacks(from, occupancy);
+            while v != 0 {
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
+                let score = self.history_score(
+                    queen_piece(color),
+                    (((from as i32) << 6) | to as i32) as i32,
+                );
+                Self::add_move_score(list, &mut n, from, to, 0, score);
+            }
+        }
+        let mut v = tables.king_attack_area[least_significant_bit(self.king(color))]
+            & free
+            & !state.attacks[opponent(color)];
         while v != 0 {
-            let to = lsb(v);
-            cut(&mut v);
-            let from = lsb(self.king(me));
-            let score = self.history_p(iking(me), (((from as i32) << 6) | to as i32) as i32);
+            let to = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            let from = least_significant_bit(self.king(color));
+            let score =
+                self.history_score(king_piece(color), (((from as i32) << 6) | to as i32) as i32);
             Self::add_move_score(list, &mut n, from, to, 0, score);
         }
         list[n] = 0;
         n
     }
 
-    /// `gen_checks<me>`
-    pub fn gen_checks(&mut self, me: Color) -> usize {
-        let t = self.tables;
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
-        let list =
-            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+    /// `generate_checks<color>`
+    pub fn generate_checks(&mut self, color: Color) -> usize {
+        let tables = self.tables;
+        let current = self.pos.current;
+        let state = self.pos.states[current];
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[current].as_mut_ptr(), MAX_MOVES)
+        };
         let mut n = 0usize;
-        let oppc = opp(me);
-        let clear = !(self.piece(me) | st.mask);
-        let king = lsb(self.king(oppc));
-        let mut u = st.xray[me] & self.piece(me);
+        let opponent_color = opponent(color);
+        let clear = !(self.piece(color) | state.move_mask);
+        let king = least_significant_bit(self.king(opponent_color));
+        let mut u = state.xray_attacks[color] & self.piece(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let target = clear & !t.full_line[king][from];
-            if self.pos.board.square[from] as usize == ipawn(me) {
-                if (bit((from as i32 + Self::push(me)) as usize) & self.line(me, 7)) == 0 {
-                    let to = (from as i32 + Self::push(me)) as usize;
-                    if (bit(to) & target) != 0 && self.pos.board.square[to] == 0 {
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let target = clear & !tables.full_line[king][from];
+            if self.pos.board.squares[from] as usize == pawn_piece(color) {
+                if (bit((from as i32 + Self::push(color)) as usize) & self.line(color, 7)) == 0 {
+                    let to = (from as i32 + Self::push(color)) as usize;
+                    if (bit(to) & target) != 0 && self.pos.board.squares[to] == 0 {
                         Self::add_move_score(
                             list,
                             &mut n,
                             from,
                             to,
                             0,
-                            t.mvv_lva[WHITE_QUEEN][WHITE_PAWN],
+                            tables.mvv_lva[WHITE_QUEEN][WHITE_PAWN],
                         );
                     }
-                    let mut v = t.p_att[me][from] & target & self.piece(oppc);
+                    let mut v =
+                        tables.pawn_attacks[color][from] & target & self.piece(opponent_color);
                     while v != 0 {
-                        let to = lsb(v);
-                        cut(&mut v);
+                        let to = least_significant_bit(v);
+                        clear_lowest_bit(&mut v);
                         Self::add_move_score(
                             list,
                             &mut n,
                             from,
                             to,
                             0,
-                            t.mvv_lva[WHITE_KING][self.pos.board.square[to] as usize],
+                            tables.mvv_lva[WHITE_KING][self.pos.board.squares[to] as usize],
                         );
                     }
                 }
             } else {
-                let piece = self.pos.board.square[from] as usize;
-                let mut v = if piece < WHITE_LIGHT {
-                    t.n_att[from] & target
+                let piece = self.pos.board.squares[from] as usize;
+                let mut v = if piece < WHITE_LIGHT_BISHOP {
+                    tables.knight_attacks[from] & target
                 } else if piece < WHITE_ROOK {
-                    t.bishop_attacks(from, self.piece_all()) & target
+                    tables.bishop_attacks(from, self.piece_all()) & target
                 } else if piece < WHITE_QUEEN {
-                    t.rook_attacks(from, self.piece_all()) & target
+                    tables.rook_attacks(from, self.piece_all()) & target
                 } else if piece < WHITE_KING {
-                    t.queen_attacks(from, self.piece_all()) & target
+                    tables.queen_attacks(from, self.piece_all()) & target
                 } else {
-                    t.s_area[from] & target & !st.att[oppc]
+                    tables.king_attack_area[from] & target & !state.attacks[opponent_color]
                 };
                 while v != 0 {
-                    let to = lsb(v);
-                    cut(&mut v);
+                    let to = least_significant_bit(v);
+                    clear_lowest_bit(&mut v);
                     Self::add_move_score(
                         list,
                         &mut n,
                         from,
                         to,
                         0,
-                        t.mvv_lva[WHITE_KING][self.pos.board.square[to] as usize],
+                        tables.mvv_lva[WHITE_KING][self.pos.board.squares[to] as usize],
                     );
                 }
             }
         }
-        let xray = !(st.xray[me] & self.piece(me));
-        let mut u = self.knight(me) & t.n_area[king] & xray;
+        let xray_attacks = !(state.xray_attacks[color] & self.piece(color));
+        let mut u = self.knight(color) & tables.knight_area[king] & xray_attacks;
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = t.n_att[king] & t.n_att[from] & clear;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = tables.knight_attacks[king] & tables.knight_attacks[from] & clear;
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[iknight(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[knight_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
         }
-        let mut u = t.d_area[king] & self.pawn(me) & !self.line(me, 6) & xray;
+        let mut u =
+            tables.danger_area[king] & self.pawn(color) & !self.line(color, 6) & xray_attacks;
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = t.p_att[me][from] & t.p_att[oppc][king] & clear & self.piece(oppc);
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = tables.pawn_attacks[color][from]
+                & tables.pawn_attacks[opponent_color][king]
+                & clear
+                & self.piece(opponent_color);
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[ipawn(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[pawn_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
-            let to = (from as i32 + Self::push(me)) as usize;
-            if self.pos.board.square[to] == 0 && (bit(to) & t.p_att[oppc][king]) != 0 {
+            let to = (from as i32 + Self::push(color)) as usize;
+            if self.pos.board.squares[to] == 0
+                && (bit(to) & tables.pawn_attacks[opponent_color][king]) != 0
+            {
                 Self::add_move(list, &mut n, ((from as i32) << 6) | to as i32);
             }
         }
-        let b_target = t.bishop_attacks(king, self.piece_all()) & clear;
-        let r_target = t.rook_attacks(king, self.piece_all()) & clear;
+        let bishop_targets = tables.bishop_attacks(king, self.piece_all()) & clear;
+        let rook_targets = tables.rook_attacks(king, self.piece_all()) & clear;
         let bishop_bb = if (king ^ rank(king)) & 1 != 0 {
-            self.pos.board.bb[WHITE_LIGHT | me]
+            self.pos.board.bitboards[WHITE_LIGHT_BISHOP | color]
         } else {
-            self.pos.board.bb[WHITE_DARK | me]
-        } & xray;
+            self.pos.board.bitboards[WHITE_DARK_BISHOP | color]
+        } & xray_attacks;
         let mut u = bishop_bb;
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = t.bishop_attacks(from, self.piece_all()) & b_target;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = tables.bishop_attacks(from, self.piece_all()) & bishop_targets;
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[self.pos.board.square[from] as usize]
-                        [self.pos.board.square[to] as usize],
+                    tables.mvv_lva[self.pos.board.squares[from] as usize]
+                        [self.pos.board.squares[to] as usize],
                 );
             }
         }
-        let mut u = self.rook(me) & xray;
+        let mut u = self.rook(color) & xray_attacks;
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = t.rook_attacks(from, self.piece_all()) & r_target;
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = tables.rook_attacks(from, self.piece_all()) & rook_targets;
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[irook(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[rook_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
         }
-        let mut u = self.queen(me) & xray;
+        let mut u = self.queen(color) & xray_attacks;
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = t.queen_attacks(from, self.piece_all()) & (b_target | r_target);
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v =
+                tables.queen_attacks(from, self.piece_all()) & (bishop_targets | rook_targets);
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_move_score(
                     list,
                     &mut n,
                     from,
                     to,
                     0,
-                    t.mvv_lva[iqueen(me)][self.pos.board.square[to] as usize],
+                    tables.mvv_lva[queen_piece(color)][self.pos.board.squares[to] as usize],
                 );
             }
         }
@@ -1342,179 +1397,209 @@ impl Engine {
         n
     }
 
-    /// `gen_delta_moves<me>`
-    pub fn gen_delta_moves(&mut self, me: Color) -> usize {
-        let t = self.tables;
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
-        let list =
-            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
+    /// `generate_delta_moves<color>`
+    pub fn generate_delta_moves(&mut self, color: Color) -> usize {
+        let tables = self.tables;
+        let current = self.pos.current;
+        let state = self.pos.states[current];
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[current].as_mut_ptr(), MAX_MOVES)
+        };
         let mut n = 0usize;
-        let oppc = opp(me);
-        let occ = self.piece_all();
-        let free = !occ;
-        if me == WHITE {
-            if (st.castle_flags & CAN_CASTLE_OO) != 0
-                && (occ & 0x60) == 0
-                && (st.att[BLACK] & 0x70) == 0
+        let opponent_color = opponent(color);
+        let occupancy = self.piece_all();
+        let free = !occupancy;
+        if color == WHITE {
+            if (state.castling_rights & CASTLING_WHITE_KINGSIDE) != 0
+                && (occupancy & 0x60) == 0
+                && (state.attacks[BLACK] & 0x70) == 0
             {
                 Self::add_delta(
                     list,
                     &mut n,
                     &self.delta,
-                    iking(WHITE),
+                    king_piece(WHITE),
                     4,
                     6,
                     FLAG_CASTLING,
-                    st.margin,
+                    state.margin,
                 );
             }
-            if (st.castle_flags & CAN_CASTLE_OOO) != 0
-                && (occ & 0xE) == 0
-                && (st.att[BLACK] & 0x1C) == 0
+            if (state.castling_rights & CASTLING_WHITE_QUEENSIDE) != 0
+                && (occupancy & 0xE) == 0
+                && (state.attacks[BLACK] & 0x1C) == 0
             {
                 Self::add_delta(
                     list,
                     &mut n,
                     &self.delta,
-                    iking(WHITE),
+                    king_piece(WHITE),
                     4,
                     2,
                     FLAG_CASTLING,
-                    st.margin,
+                    state.margin,
                 );
             }
         } else {
-            if (st.castle_flags & CAN_CASTLE_oo) != 0
-                && (occ & 0x6000_0000_0000_0000) == 0
-                && (st.att[WHITE] & 0x7000_0000_0000_0000) == 0
+            if (state.castling_rights & CASTLING_BLACK_KINGSIDE) != 0
+                && (occupancy & 0x6000_0000_0000_0000) == 0
+                && (state.attacks[WHITE] & 0x7000_0000_0000_0000) == 0
             {
                 Self::add_delta(
                     list,
                     &mut n,
                     &self.delta,
-                    iking(BLACK),
+                    king_piece(BLACK),
                     60,
                     62,
                     FLAG_CASTLING,
-                    st.margin,
+                    state.margin,
                 );
             }
-            if (st.castle_flags & CAN_CASTLE_ooo) != 0
-                && (occ & 0x0E00_0000_0000_0000) == 0
-                && (st.att[WHITE] & 0x1C00_0000_0000_0000) == 0
+            if (state.castling_rights & CASTLING_BLACK_QUEENSIDE) != 0
+                && (occupancy & 0x0E00_0000_0000_0000) == 0
+                && (state.attacks[WHITE] & 0x1C00_0000_0000_0000) == 0
             {
                 Self::add_delta(
                     list,
                     &mut n,
                     &self.delta,
-                    iking(BLACK),
+                    king_piece(BLACK),
                     60,
                     58,
                     FLAG_CASTLING,
-                    st.margin,
+                    state.margin,
                 );
             }
         }
-        let mut v = Self::shift(me, self.pawn(me)) & free & !self.line(me, 7);
+        let mut v = Self::shift(color, self.pawn(color)) & free & !self.line(color, 7);
         while v != 0 {
-            let to = lsb(v);
-            cut(&mut v);
-            if (bit(to) & self.line(me, 2)) != 0
-                && self.pos.board.square[(to as i32 + Self::push(me)) as usize] == 0
+            let to = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            if (bit(to) & self.line(color, 2)) != 0
+                && self.pos.board.squares[(to as i32 + Self::push(color)) as usize] == 0
             {
-                let from = (to as i32 - Self::push(me)) as usize;
+                let from = (to as i32 - Self::push(color)) as usize;
                 Self::add_delta(
                     list,
                     &mut n,
                     &self.delta,
-                    ipawn(me),
+                    pawn_piece(color),
                     from,
-                    (to as i32 + Self::push(me)) as usize,
+                    (to as i32 + Self::push(color)) as usize,
                     0,
-                    st.margin,
+                    state.margin,
                 );
             }
-            let from = (to as i32 - Self::push(me)) as usize;
-            Self::add_delta(list, &mut n, &self.delta, ipawn(me), from, to, 0, st.margin);
+            let from = (to as i32 - Self::push(color)) as usize;
+            Self::add_delta(
+                list,
+                &mut n,
+                &self.delta,
+                pawn_piece(color),
+                from,
+                to,
+                0,
+                state.margin,
+            );
         }
-        let mut u = self.knight(me);
+        let mut u = self.knight(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.n_att[from];
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.knight_attacks[from];
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_delta(
                     list,
                     &mut n,
                     &self.delta,
-                    iknight(me),
-                    from,
-                    to,
-                    0,
-                    st.margin,
-                );
-            }
-        }
-        let mut u = self.bishop(me);
-        while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.bishop_attacks(from, occ);
-            while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
-                Self::add_delta(
-                    list,
-                    &mut n,
-                    &self.delta,
-                    self.pos.board.square[from] as usize,
+                    knight_piece(color),
                     from,
                     to,
                     0,
-                    st.margin,
+                    state.margin,
                 );
             }
         }
-        let mut u = self.rook(me);
+        let mut u = self.bishop(color);
         while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.rook_attacks(from, occ);
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.bishop_attacks(from, occupancy);
             while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
-                Self::add_delta(list, &mut n, &self.delta, irook(me), from, to, 0, st.margin);
-            }
-        }
-        let mut u = self.queen(me);
-        while u != 0 {
-            let from = lsb(u);
-            cut(&mut u);
-            let mut v = free & t.queen_attacks(from, occ);
-            while v != 0 {
-                let to = lsb(v);
-                cut(&mut v);
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
                 Self::add_delta(
                     list,
                     &mut n,
                     &self.delta,
-                    iqueen(me),
+                    self.pos.board.squares[from] as usize,
                     from,
                     to,
                     0,
-                    st.margin,
+                    state.margin,
                 );
             }
         }
-        let mut v = t.s_area[lsb(self.king(me))] & free & !st.att[oppc];
+        let mut u = self.rook(color);
+        while u != 0 {
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.rook_attacks(from, occupancy);
+            while v != 0 {
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
+                Self::add_delta(
+                    list,
+                    &mut n,
+                    &self.delta,
+                    rook_piece(color),
+                    from,
+                    to,
+                    0,
+                    state.margin,
+                );
+            }
+        }
+        let mut u = self.queen(color);
+        while u != 0 {
+            let from = least_significant_bit(u);
+            clear_lowest_bit(&mut u);
+            let mut v = free & tables.queen_attacks(from, occupancy);
+            while v != 0 {
+                let to = least_significant_bit(v);
+                clear_lowest_bit(&mut v);
+                Self::add_delta(
+                    list,
+                    &mut n,
+                    &self.delta,
+                    queen_piece(color),
+                    from,
+                    to,
+                    0,
+                    state.margin,
+                );
+            }
+        }
+        let mut v = tables.king_attack_area[least_significant_bit(self.king(color))]
+            & free
+            & !state.attacks[opponent_color];
         while v != 0 {
-            let to = lsb(v);
-            cut(&mut v);
-            let from = lsb(self.king(me));
-            Self::add_delta(list, &mut n, &self.delta, iking(me), from, to, 0, st.margin);
+            let to = least_significant_bit(v);
+            clear_lowest_bit(&mut v);
+            let from = least_significant_bit(self.king(color));
+            Self::add_delta(
+                list,
+                &mut n,
+                &self.delta,
+                king_piece(color),
+                from,
+                to,
+                0,
+                state.margin,
+            );
         }
         list[n] = 0;
         n
@@ -1541,24 +1626,24 @@ impl Engine {
 
     /// History score packing (`HistoryP`).
     #[inline]
-    pub fn history_p(&self, piece: usize, mv: i32) -> i32 {
-        let to = move_to(mv);
-        let h = self.history[((piece) << 6) | to] as i32;
-        let hi = h & 0xFF00;
-        let lo = h & 0x00FF;
-        ((hi / lo) << 16) as i32
+    pub fn history_score(&self, piece: usize, chess_move: i32) -> i32 {
+        let to = move_to(chess_move);
+        let history = self.history[((piece) << 6) | to] as i32;
+        let high = history & 0xFF00;
+        let low = history & 0x00FF;
+        ((high / low) << 16) as i32
     }
 
-    /// Generate all legal moves for `me` (helper used by UCI and tests; the
+    /// Generate all legal moves for `color` (helper used by UCI and tests; the
     /// search itself uses the staged generators above).
     #[inline(always)]
-    fn load_moves_list(&self, cur: usize) -> [i32; MAX_MOVES] {
+    fn load_moves_list(&self, current: usize) -> [i32; MAX_MOVES] {
         let mut list = [0i32; MAX_MOVES];
         let mut n = 0usize;
         loop {
-            let mv = self.move_lists[cur][n];
-            list[n] = mv;
-            if mv == 0 {
+            let chess_move = self.move_lists[current][n];
+            list[n] = chess_move;
+            if chess_move == 0 {
                 break;
             }
             n += 1;
@@ -1566,31 +1651,31 @@ impl Engine {
         list
     }
 
-    pub fn gen_legal_moves(&mut self, me: Color, out: &mut [i32]) -> usize {
-        let cur = self.pos.cur;
-        self.pos.data[cur].mask = self.piece(opp(me));
-        let n = if self.check(me) {
-            self.pos.data[cur].mask = !0u64;
-            self.gen_evasions(me)
+    pub fn generate_legal_moves(&mut self, color: Color, out: &mut [i32]) -> usize {
+        let current = self.pos.current;
+        self.pos.states[current].move_mask = self.piece(opponent(color));
+        let n = if self.check(color) {
+            self.pos.states[current].move_mask = !0u64;
+            self.generate_evasions(color)
         } else {
-            let n = self.gen_captures(me);
-            self.gen_quiet_moves(me, n)
+            let n = self.generate_captures(color);
+            self.generate_quiet_moves(color, n)
         };
-        let list = self.load_moves_list(cur);
+        let list = self.load_moves_list(current);
         let mut k = 0usize;
-        for &mv in list.iter().take(n) {
-            if mv == 0 {
+        for &chess_move in list.iter().take(n) {
+            if chess_move == 0 {
                 break;
             }
             if k >= out.len() {
                 break;
             }
-            self.do_move(me, mv);
-            let king_sq = lsb(self.king(me));
-            let attacked = self.is_square_attacked(king_sq, opp(me));
-            self.undo_move(me, mv);
+            self.make_move(color, chess_move);
+            let king_square = least_significant_bit(self.king(color));
+            let attacked = self.is_square_attacked(king_square, opponent(color));
+            self.unmake_move(color, chess_move);
             if !attacked {
-                out[k] = mv;
+                out[k] = chess_move;
                 k += 1;
             }
         }
@@ -1652,15 +1737,15 @@ pub fn sort_moves(start: usize, finish: usize, list: &mut [i32]) {
 impl Engine {
     #[inline(always)]
     pub fn pick_move(&mut self) -> i32 {
-        let cur = self.pos.cur;
-        let idx = self.pos.data[cur].current;
-        let list = &mut self.move_lists[cur];
-        let mv = list[idx];
-        if mv == 0 {
+        let current = self.pos.current;
+        let idx = self.pos.states[current].current;
+        let list = &mut self.move_lists[current];
+        let chess_move = list[idx];
+        if chess_move == 0 {
             return 0;
         }
         let mut best = idx;
-        let mut best_val = mv;
+        let mut best_val = chess_move;
         let mut p = idx + 1;
         while list[p] != 0 {
             if list[p] > best_val {
@@ -1672,30 +1757,31 @@ impl Engine {
         let value = list[best];
         list[best] = list[idx];
         list[idx] = value;
-        self.pos.data[cur].current = idx + 1;
+        self.pos.states[current].current = idx + 1;
         value & 0xFFFF
     }
 
-    pub fn gen_next_moves(&mut self, me: Color) {
-        let cur = self.pos.cur;
-        let mut st = self.pos.data[cur];
-        st.gen_flags &= !FLAG_SORT;
-        self.pos.data[cur] = st;
-        let list =
-            unsafe { std::slice::from_raw_parts_mut(self.move_lists[cur].as_mut_ptr(), MAX_MOVES) };
-        match st.stage {
-            S_HASH_MOVE | R_HASH_MOVE | E_HASH_MOVE => {
-                list[0] = st.killer[0] as i32;
+    pub fn generate_next_moves(&mut self, color: Color) {
+        let current = self.pos.current;
+        let mut state = self.pos.states[current];
+        state.generation_flags &= !FLAG_SORT;
+        self.pos.states[current] = state;
+        let list = unsafe {
+            std::slice::from_raw_parts_mut(self.move_lists[current].as_mut_ptr(), MAX_MOVES)
+        };
+        match state.stage {
+            STAGE_HASH_MOVE | ROOT_HASH_MOVE | EVASION_HASH_MOVE => {
+                list[0] = state.killer_moves[0] as i32;
                 list[1] = 0;
             }
-            S_GOOD_CAP => {
-                self.pos.data[cur].mask = self.piece(opp(me));
-                let r = self.gen_captures(me);
+            STAGE_GOOD_CAPTURES => {
+                self.pos.states[current].move_mask = self.piece(opponent(color));
+                let r = self.generate_captures(color);
                 let mut p = 0usize;
                 let mut q = r as isize - 1;
                 while q >= p as isize {
-                    let mv = list[q as usize] & 0xFFFF;
-                    if !self.see(me, mv, 0) {
+                    let chess_move = list[q as usize] & 0xFFFF;
+                    if !self.static_exchange_evaluation(color, chess_move, 0) {
                         let next = list[p];
                         list[p] = list[q as usize];
                         list[q as usize] = next;
@@ -1704,106 +1790,113 @@ impl Engine {
                         q -= 1;
                     }
                 }
-                self.pos.data[cur].start = p;
-                self.pos.data[cur].current = p;
-                sort(p, r, &mut self.move_lists[cur]);
+                self.pos.states[current].start_index = p;
+                self.pos.states[current].current = p;
+                sort(p, r, &mut self.move_lists[current]);
             }
-            S_SPECIAL => {
-                self.pos.data[cur].current = st.start;
-                let mut p = st.start;
-                if st.killer[1] != 0 {
-                    list[p] = st.killer[1] as i32;
+            STAGE_SPECIAL => {
+                self.pos.states[current].current = state.start_index;
+                let mut p = state.start_index;
+                if state.killer_moves[1] != 0 {
+                    list[p] = state.killer_moves[1] as i32;
                     p += 1;
                 }
-                if st.killer[2] != 0 {
-                    list[p] = st.killer[2] as i32;
+                if state.killer_moves[2] != 0 {
+                    list[p] = state.killer_moves[2] as i32;
                     p += 1;
                 }
-                if st.refs[0] != 0 && st.refs[0] != st.killer[1] && st.refs[0] != st.killer[2] {
-                    list[p] = st.refs[0] as i32;
+                if state.refutation_moves[0] != 0
+                    && state.refutation_moves[0] != state.killer_moves[1]
+                    && state.refutation_moves[0] != state.killer_moves[2]
+                {
+                    list[p] = state.refutation_moves[0] as i32;
                     p += 1;
                 }
-                if st.refs[1] != 0 && st.refs[1] != st.killer[1] && st.refs[1] != st.killer[2] {
-                    list[p] = st.refs[1] as i32;
+                if state.refutation_moves[1] != 0
+                    && state.refutation_moves[1] != state.killer_moves[1]
+                    && state.refutation_moves[1] != state.killer_moves[2]
+                {
+                    list[p] = state.refutation_moves[1] as i32;
                     p += 1;
                 }
                 list[p] = 0;
             }
-            S_QUIET => {
-                let start = st.start;
-                self.gen_quiet_moves(me, start);
-                self.pos.data[cur].current = start;
-                self.pos.data[cur].gen_flags |= FLAG_SORT;
+            STAGE_QUIET => {
+                let start = state.start_index;
+                self.generate_quiet_moves(color, start);
+                self.pos.states[current].current = start;
+                self.pos.states[current].generation_flags |= FLAG_SORT;
             }
-            S_BAD_CAP => {
-                let start = st.start;
+            STAGE_BAD_CAPTURES => {
+                let start = state.start_index;
                 list[start] = 0;
-                self.pos.data[cur].current = 0;
-                if (st.gen_flags & FLAG_NO_BC_SORT) == 0 {
-                    sort(0, start, &mut self.move_lists[cur]);
+                self.pos.states[current].current = 0;
+                if (state.generation_flags & FLAG_NO_BAD_CAPTURE_SORT) == 0 {
+                    sort(0, start, &mut self.move_lists[current]);
                 }
             }
-            R_CAP => {
-                let r = self.gen_captures(me);
-                self.pos.data[cur].current = 0;
-                sort(0, r, &mut self.move_lists[cur]);
+            ROOT_CAPTURES => {
+                let r = self.generate_captures(color);
+                self.pos.states[current].current = 0;
+                sort(0, r, &mut self.move_lists[current]);
             }
-            R_CHECKS => {
-                let r = self.gen_checks(me);
-                self.pos.data[cur].current = 0;
-                sort(0, r, &mut self.move_lists[cur]);
+            ROOT_CHECKS => {
+                let r = self.generate_checks(color);
+                self.pos.states[current].current = 0;
+                sort(0, r, &mut self.move_lists[current]);
             }
-            E_EV => {
-                self.pos.data[cur].mask = !0u64;
-                let r = self.gen_evasions(me);
+            EVASION_MOVES => {
+                self.pos.states[current].move_mask = !0u64;
+                let r = self.generate_evasions(color);
                 self.mark_evasions();
                 sort(0, r, list);
-                self.pos.data[cur].current = 0;
+                self.pos.states[current].current = 0;
             }
             _ => {}
         }
     }
 
     #[inline(always)]
-    pub fn get_move(&mut self, me: Color, root: bool) -> i32 {
+    pub fn get_move(&mut self, color: Color, root: bool) -> i32 {
         if root {
-            let cur = self.pos.cur;
-            let idx = self.pos.data[cur].current;
-            let mv = self.root_list[idx] & 0xFFFF;
-            self.pos.data[cur].current = idx + 1;
-            return mv;
+            let current = self.pos.current;
+            let idx = self.pos.states[current].current;
+            let chess_move = self.root_list[idx] & 0xFFFF;
+            self.pos.states[current].current = idx + 1;
+            return chess_move;
         }
         loop {
-            let cur = self.pos.cur;
-            let idx = self.pos.data[cur].current;
-            if self.move_lists[cur][idx] == 0 {
-                let stage = self.pos.data[cur].stage + 1;
-                self.pos.data[cur].stage = stage;
+            let current = self.pos.current;
+            let idx = self.pos.states[current].current;
+            if self.move_lists[current][idx] == 0 {
+                let stage = self.pos.states[current].stage + 1;
+                self.pos.states[current].stage = stage;
                 if ((1u32 << stage) & STAGE_NONE) != 0 {
                     return 0;
                 }
-                self.gen_next_moves(me);
+                self.generate_next_moves(color);
                 continue;
             }
-            let move_val = if (self.pos.data[cur].gen_flags & FLAG_SORT) != 0 {
+            let move_val = if (self.pos.states[current].generation_flags & FLAG_SORT) != 0 {
                 self.pick_move()
             } else {
-                let mv = self.move_lists[cur][idx] & 0xFFFF;
-                self.pos.data[cur].current = idx + 1;
-                mv
+                let chess_move = self.move_lists[current][idx] & 0xFFFF;
+                self.pos.states[current].current = idx + 1;
+                chess_move
             };
-            let stage = self.pos.data[cur].stage;
-            if stage == S_QUIET {
-                let st = &self.pos.data[cur];
-                if move_val == st.killer[1] as i32
-                    || move_val == st.killer[2] as i32
-                    || move_val == st.refs[0] as i32
-                    || move_val == st.refs[1] as i32
+            let stage = self.pos.states[current].stage;
+            if stage == STAGE_QUIET {
+                let state = &self.pos.states[current];
+                if move_val == state.killer_moves[1] as i32
+                    || move_val == state.killer_moves[2] as i32
+                    || move_val == state.refutation_moves[0] as i32
+                    || move_val == state.refutation_moves[1] as i32
                 {
                     continue;
                 }
-            } else if stage == S_SPECIAL
-                && (self.pos.board.square[move_to(move_val)] != 0 || !self.is_legal(me, move_val))
+            } else if stage == STAGE_SPECIAL
+                && (self.pos.board.squares[move_to(move_val)] != 0
+                    || !self.is_legal(color, move_val))
             {
                 continue;
             }
@@ -1812,53 +1905,57 @@ impl Engine {
     }
 
     #[allow(unused_assignments)]
-    pub fn gen_root_moves(&mut self, me: Color) {
+    pub fn generate_root_moves(&mut self, color: Color) {
         let mut depth = -256i32;
         let mut killer = 0i32;
-        if let Some(idx) = self.probe_hash() {
-            let e = self.hash.load(idx);
-            if e.mv != 0 && e.low_depth as i32 > depth {
+        if let Some(idx) = self.probe_transposition_table() {
+            let e = self.transposition_table.load(idx);
+            if e.chess_move != 0 && e.low_depth as i32 > depth {
                 depth = e.low_depth as i32;
-                killer = e.mv as i32;
+                killer = e.chess_move as i32;
             }
         }
-        if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash.load(idx);
-            if e.depth as i32 > depth && e.mv != 0 {
+        if let Some(idx) = self.probe_principal_variation_table() {
+            let e = self.principal_variation_table.load(idx);
+            if e.depth as i32 > depth && e.chess_move != 0 {
                 depth = e.depth as i32;
-                killer = e.mv as i32;
+                killer = e.chess_move as i32;
             }
         }
-        let cur = self.pos.cur;
-        self.pos.data[cur].killer[0] = killer as u16;
-        if self.check(me) {
-            self.pos.data[cur].stage = STAGE_EVASION;
+        let current = self.pos.current;
+        self.pos.states[current].killer_moves[0] = killer as u16;
+        if self.check(color) {
+            self.pos.states[current].stage = STAGE_EVASION;
         } else {
-            self.pos.data[cur].stage = STAGE_SEARCH;
-            let st = self.pos.data[cur];
-            self.pos.data[cur].refs[0] =
-                self.reference[((self.pos.board.square[move_to(st.mv as i32)] as usize) << 6)
-                    | move_to(st.mv as i32)]
-                .refs[0];
-            self.pos.data[cur].refs[1] =
-                self.reference[((self.pos.board.square[move_to(st.mv as i32)] as usize) << 6)
-                    | move_to(st.mv as i32)]
-                .refs[1];
+            self.pos.states[current].stage = STAGE_SEARCH;
+            let state = self.pos.states[current];
+            self.pos.states[current].refutation_moves[0] = self.reference[((self.pos.board.squares
+                [move_to(state.chess_move as i32)]
+                as usize)
+                << 6)
+                | move_to(state.chess_move as i32)]
+            .refutation_moves[0];
+            self.pos.states[current].refutation_moves[1] = self.reference[((self.pos.board.squares
+                [move_to(state.chess_move as i32)]
+                as usize)
+                << 6)
+                | move_to(state.chess_move as i32)]
+            .refutation_moves[1];
         }
-        self.pos.data[cur].gen_flags = 0;
+        self.pos.states[current].generation_flags = 0;
         let mut root = [0i32; 256];
         let mut p = 0usize;
-        self.pos.data[cur].current = 0;
-        self.move_lists[cur][0] = 0;
+        self.pos.states[current].current = 0;
+        self.move_lists[current][0] = 0;
         loop {
-            let mv = self.get_move(me, false);
-            if mv == 0 {
+            let chess_move = self.get_move(color, false);
+            if chess_move == 0 {
                 break;
             }
-            if self.is_illegal(me, mv) {
+            if self.is_illegal(color, chess_move) {
                 continue;
             }
-            if p > 0 && mv == killer {
+            if p > 0 && chess_move == killer {
                 continue;
             }
             if self.search_moves != 0 {
@@ -1866,7 +1963,7 @@ impl Engine {
                 // original behaviour for completeness.
                 continue;
             }
-            root[p] = mv;
+            root[p] = chess_move;
             p += 1;
         }
         root[p] = 0;
@@ -1880,12 +1977,12 @@ impl Engine {
 
 impl Engine {
     #[inline(always)]
-    pub fn see(&self, me: Color, mv: Move, margin: i32) -> bool {
-        let t = self.tables;
-        let from = move_from(mv);
-        let to = move_to(mv);
-        let mut piece = SEE_VALUE[self.pos.board.square[from] as usize];
-        let mut capture = SEE_VALUE[self.pos.board.square[to] as usize];
+    pub fn static_exchange_evaluation(&self, color: Color, chess_move: Move, margin: i32) -> bool {
+        let tables = self.tables;
+        let from = move_from(chess_move);
+        let to = move_to(chess_move);
+        let mut piece = SEE_VALUE[self.pos.board.squares[from] as usize];
+        let mut capture = SEE_VALUE[self.pos.board.squares[to] as usize];
         let delta = piece - capture;
         if delta <= -margin {
             return true;
@@ -1893,137 +1990,149 @@ impl Engine {
         if piece == SEE_VALUE[WHITE_KING] {
             return true;
         }
-        let st = &self.pos.data[self.pos.cur];
-        if (st.xray[me] & bit(from)) != 0 {
+        let state = &self.pos.states[self.pos.current];
+        if (state.xray_attacks[color] & bit(from)) != 0 {
             return true;
         }
-        if (st.pin[me] & bit(from)) != 0 && piece <= SEE_VALUE[WHITE_DARK] {
+        if (state.pinned_pieces[color] & bit(from)) != 0 && piece <= SEE_VALUE[WHITE_DARK_BISHOP] {
             return true;
         }
         if piece > (SEE_VALUE[WHITE_KING] >> 1) {
             return true;
         }
-        if is_ep(mv) {
+        if is_en_passant(chess_move) {
             return true;
         }
-        if (st.att[opp(me)] & bit(to)) == 0 {
+        if (state.attacks[opponent(color)] & bit(to)) == 0 {
             return true;
         }
-        let mut att = t.p_att[me][to] & self.pawn(opp(me));
-        if att != 0 && delta + margin > SEE_VALUE[WHITE_PAWN] {
+        let mut attacks = tables.pawn_attacks[color][to] & self.pawn(opponent(color));
+        if attacks != 0 && delta + margin > SEE_VALUE[WHITE_PAWN] {
             return false;
         }
         let clear = !bit(from);
-        let mut def = t.p_att[opp(me)][to] & self.pawn(me) & clear;
+        let mut def = tables.pawn_attacks[opponent(color)][to] & self.pawn(color) & clear;
         if def != 0 && delta + SEE_VALUE[WHITE_PAWN] + margin <= 0 {
             return true;
         }
-        att |= t.n_att[to] & self.knight(opp(me));
-        if att != 0 && delta > SEE_VALUE[WHITE_DARK] - margin {
+        attacks |= tables.knight_attacks[to] & self.knight(opponent(color));
+        if attacks != 0 && delta > SEE_VALUE[WHITE_DARK_BISHOP] - margin {
             return false;
         }
-        let mut occ = self.piece_all() & clear;
-        let b_area = t.bishop_attacks(to, occ);
-        let opp_bishop = self.bishop(opp(me));
-        if delta > SEE_VALUE[idark(me)] - margin && (b_area & opp_bishop) != 0 {
+        let mut occupancy = self.piece_all() & clear;
+        let bishop_area = tables.bishop_attacks(to, occupancy);
+        let opp_bishop = self.bishop(opponent(color));
+        if delta > SEE_VALUE[dark_bishop_piece(color)] - margin && (bishop_area & opp_bishop) != 0 {
             return false;
         }
-        let my_bishop = self.bishop(me);
-        let b_slider_att = t.b_mask[to] & (opp_bishop | self.queen(opp(me)));
-        let r_slider_att = t.r_mask[to] & self.major(opp(me));
-        let b_slider_def = t.b_mask[to] & (my_bishop | self.queen(me)) & clear;
-        let r_slider_def = t.r_mask[to] & self.major(me) & clear;
-        att |= b_slider_att & b_area;
-        def |= t.n_att[to] & self.knight(me) & clear;
-        let r_area = t.rook_attacks(to, occ);
-        att |= r_slider_att & r_area;
-        def |= b_slider_def & b_area;
-        def |= r_slider_def & r_area;
-        att |= t.s_area[to] & self.king(opp(me));
-        def |= t.s_area[to] & self.king(me) & clear;
+        let my_bishop = self.bishop(color);
+        let bishop_slider_attacks =
+            tables.bishop_attack_mask[to] & (opp_bishop | self.queen(opponent(color)));
+        let rook_slider_attacks = tables.rook_attack_mask[to] & self.major(opponent(color));
+        let bishop_slider_defenses =
+            tables.bishop_attack_mask[to] & (my_bishop | self.queen(color)) & clear;
+        let rook_slider_defenses = tables.rook_attack_mask[to] & self.major(color) & clear;
+        attacks |= bishop_slider_attacks & bishop_area;
+        def |= tables.knight_attacks[to] & self.knight(color) & clear;
+        let rook_area = tables.rook_attacks(to, occupancy);
+        attacks |= rook_slider_attacks & rook_area;
+        def |= bishop_slider_defenses & bishop_area;
+        def |= rook_slider_defenses & rook_area;
+        attacks |= tables.king_attack_area[to] & self.king(opponent(color));
+        def |= tables.king_attack_area[to] & self.king(color) & clear;
         loop {
             let mut u;
             if {
-                u = att & self.pawn(opp(me));
+                u = attacks & self.pawn(opponent(color));
                 u != 0
             } {
                 capture -= piece;
                 piece = SEE_VALUE[WHITE_PAWN];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                att ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & b_slider_att & occ & !att;
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                attacks ^= bit(square_index);
+                let mut new_att = tables.full_line[to][square_index]
+                    & bishop_slider_attacks
+                    & occupancy
+                    & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
-                        att |= bit(pos);
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
+                        attacks |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = att & self.knight(opp(me));
+                u = attacks & self.knight(opponent(color));
                 u != 0
             } {
                 capture -= piece;
                 piece = SEE_VALUE[WHITE_KNIGHT];
-                att ^= (!(u - 1)) & u;
+                attacks ^= (!(u - 1)) & u;
             } else if {
-                u = att & opp_bishop;
+                u = attacks & opp_bishop;
                 u != 0
             } {
                 capture -= piece;
-                piece = SEE_VALUE[WHITE_DARK];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                att ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & b_slider_att & occ & !att;
+                piece = SEE_VALUE[WHITE_DARK_BISHOP];
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                attacks ^= bit(square_index);
+                let mut new_att = tables.full_line[to][square_index]
+                    & bishop_slider_attacks
+                    & occupancy
+                    & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
-                        att |= bit(pos);
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
+                        attacks |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = att & self.rook(opp(me));
+                u = attacks & self.rook(opponent(color));
                 u != 0
             } {
                 capture -= piece;
                 piece = SEE_VALUE[WHITE_ROOK];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                att ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & r_slider_att & occ & !att;
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                attacks ^= bit(square_index);
+                let mut new_att =
+                    tables.full_line[to][square_index] & rook_slider_attacks & occupancy & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
-                        att |= bit(pos);
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
+                        attacks |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = att & self.queen(opp(me));
+                u = attacks & self.queen(opponent(color));
                 u != 0
             } {
                 capture -= piece;
                 piece = SEE_VALUE[WHITE_QUEEN];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                att ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & (r_slider_att | b_slider_att) & occ & !att;
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                attacks ^= bit(square_index);
+                let mut new_att = tables.full_line[to][square_index]
+                    & (rook_slider_attacks | bishop_slider_attacks)
+                    & occupancy
+                    & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
-                        att |= bit(pos);
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
+                        attacks |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = att & self.king(opp(me));
+                u = attacks & self.king(opponent(color));
                 u != 0
             } {
                 capture -= piece;
@@ -2038,25 +2147,28 @@ impl Engine {
                 return false;
             }
             if {
-                u = def & self.pawn(me);
+                u = def & self.pawn(color);
                 u != 0
             } {
                 capture += piece;
                 piece = SEE_VALUE[WHITE_PAWN];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                def ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & b_slider_def & occ & !att;
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                def ^= bit(square_index);
+                let mut new_att = tables.full_line[to][square_index]
+                    & bishop_slider_defenses
+                    & occupancy
+                    & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
                         def |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = def & self.knight(me);
+                u = def & self.knight(color);
                 u != 0
             } {
                 capture += piece;
@@ -2067,57 +2179,66 @@ impl Engine {
                 u != 0
             } {
                 capture += piece;
-                piece = SEE_VALUE[WHITE_DARK];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                def ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & b_slider_def & occ & !att;
+                piece = SEE_VALUE[WHITE_DARK_BISHOP];
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                def ^= bit(square_index);
+                let mut new_att = tables.full_line[to][square_index]
+                    & bishop_slider_defenses
+                    & occupancy
+                    & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
                         def |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = def & self.rook(me);
+                u = def & self.rook(color);
                 u != 0
             } {
                 capture += piece;
                 piece = SEE_VALUE[WHITE_ROOK];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                def ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & r_slider_def & occ & !att;
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                def ^= bit(square_index);
+                let mut new_att = tables.full_line[to][square_index]
+                    & rook_slider_defenses
+                    & occupancy
+                    & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
                         def |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = def & self.queen(me);
+                u = def & self.queen(color);
                 u != 0
             } {
                 capture += piece;
                 piece = SEE_VALUE[WHITE_QUEEN];
-                let sq = lsb(u);
-                occ ^= bit(sq);
-                def ^= bit(sq);
-                let mut new_att = t.full_line[to][sq] & (r_slider_def | b_slider_def) & occ & !att;
+                let square_index = least_significant_bit(u);
+                occupancy ^= bit(square_index);
+                def ^= bit(square_index);
+                let mut new_att = tables.full_line[to][square_index]
+                    & (rook_slider_defenses | bishop_slider_defenses)
+                    & occupancy
+                    & !attacks;
                 while new_att != 0 {
-                    let pos = lsb(new_att);
-                    cut(&mut new_att);
-                    if (t.between[to][pos] & occ) == 0 {
+                    let pos = least_significant_bit(new_att);
+                    clear_lowest_bit(&mut new_att);
+                    if (tables.between[to][pos] & occupancy) == 0 {
                         def |= bit(pos);
                         break;
                     }
                 }
             } else if {
-                u = def & self.king(me);
+                u = def & self.king(color);
                 u != 0
             } {
                 capture += piece;
@@ -2145,14 +2266,17 @@ impl Engine {
         let pos = &self.pos;
         let b = &pos.board;
         (
-            b.bb[WHITE],
-            b.bb[BLACK],
-            b.bb[WHITE_KING] | b.bb[BLACK_KING],
-            b.bb[WHITE_QUEEN] | b.bb[BLACK_QUEEN],
-            b.bb[WHITE_ROOK] | b.bb[BLACK_ROOK],
-            b.bb[WHITE_LIGHT] | b.bb[WHITE_DARK] | b.bb[BLACK_LIGHT] | b.bb[BLACK_DARK],
-            b.bb[WHITE_KNIGHT] | b.bb[BLACK_KNIGHT],
-            b.bb[WHITE_PAWN] | b.bb[BLACK_PAWN],
+            b.bitboards[WHITE],
+            b.bitboards[BLACK],
+            b.bitboards[WHITE_KING] | b.bitboards[BLACK_KING],
+            b.bitboards[WHITE_QUEEN] | b.bitboards[BLACK_QUEEN],
+            b.bitboards[WHITE_ROOK] | b.bitboards[BLACK_ROOK],
+            b.bitboards[WHITE_LIGHT_BISHOP]
+                | b.bitboards[WHITE_DARK_BISHOP]
+                | b.bitboards[BLACK_LIGHT_BISHOP]
+                | b.bitboards[BLACK_DARK_BISHOP],
+            b.bitboards[WHITE_KNIGHT] | b.bitboards[BLACK_KNIGHT],
+            b.bitboards[WHITE_PAWN] | b.bitboards[BLACK_PAWN],
         )
     }
 
@@ -2163,20 +2287,29 @@ impl Engine {
         if max == 0 || self.piece_all().count_ones() as usize > max {
             return None;
         }
-        let st = self.pos.data[self.pos.cur];
-        if st.castle_flags != 0 {
+        let state = self.pos.states[self.pos.current];
+        if state.castling_rights != 0 {
             return None;
         }
         let (white, black, kings, queens, rooks, bishops, knights, pawns) = self.tb_pieces();
-        let turn = st.turn as usize == WHITE;
-        let ep = st.ep_square as u32;
+        let side_to_move = state.side_to_move as usize == WHITE;
+        let ep = state.en_passant_square as u32;
         let tb = self.tablebases.as_ref()?;
         let result = tb.probe_wdl(
-            white, black, kings, queens, rooks, bishops, knights, pawns, ep, turn,
+            white,
+            black,
+            kings,
+            queens,
+            rooks,
+            bishops,
+            knights,
+            pawns,
+            ep,
+            side_to_move,
         );
         match result {
             Ok(wdl) => {
-                self.pos.tb_hits += 1;
+                self.pos.tablebase_hits += 1;
                 Some(crate::tablebase::wdl_score(wdl))
             }
             Err(_) => None,
@@ -2190,13 +2323,13 @@ impl Engine {
         if max == 0 || self.piece_all().count_ones() as usize > max {
             return None;
         }
-        let st = self.pos.data[self.pos.cur];
-        if st.castle_flags != 0 {
+        let state = self.pos.states[self.pos.current];
+        if state.castling_rights != 0 {
             return None;
         }
         let (white, black, kings, queens, rooks, bishops, knights, pawns) = self.tb_pieces();
-        let turn = st.turn as usize == WHITE;
-        let ep = st.ep_square as u32;
+        let side_to_move = state.side_to_move as usize == WHITE;
+        let ep = state.en_passant_square as u32;
         let tb = self.tablebases.as_ref()?;
         let result = tb
             .probe_root(
@@ -2208,34 +2341,34 @@ impl Engine {
                 bishops,
                 knights,
                 pawns,
-                st.ply as u32,
+                state.ply as u32,
                 ep,
-                turn,
+                side_to_move,
             )
             .ok()?;
         let dtz = crate::tablebase::root_dtz(result.root)?;
-        let mv = crate::tablebase::root_move(&dtz)?;
+        let chess_move = crate::tablebase::root_move(&dtz)?;
         let score = crate::tablebase::wdl_score(dtz.wdl);
-        self.pos.tb_hits += 1;
+        self.pos.tablebase_hits += 1;
         let info = Info {
             multipv: 0,
             depth: 1,
-            sel_depth: 1,
+            selective_depth: 1,
             score,
             nodes: 1,
-            tb_hits: self.pos.tb_hits,
+            tablebase_hits: self.pos.tablebase_hits,
             time_ms: 1,
-            pv: vec![mv],
+            principal_variation: vec![chess_move],
         };
-        self.reporter.pv(&info);
+        self.reporter.principal_variation(&info);
         Some(SearchResult {
-            best_move: mv,
+            best_move: chess_move,
             ponder_move: 0,
             score,
             nodes: 1,
             depth: 1,
-            sel_depth: 1,
-            pv: vec![mv],
+            selective_depth: 1,
+            principal_variation: vec![chess_move],
         })
     }
 }
@@ -2246,15 +2379,15 @@ impl Engine {
 
 impl Engine {
     #[inline(always)]
-    pub fn probe_hash(&mut self) -> Option<usize> {
-        let key = self.pos.data[self.pos.cur].key;
-        let idx = (hash_key_high(key) as usize) & self.hash_mask;
+    pub fn probe_transposition_table(&mut self) -> Option<usize> {
+        let key = self.pos.states[self.pos.current].key;
+        let idx = (transposition_key_high(key) as usize) & self.transposition_mask;
         let date = self.shared.date;
         for i in 0..4 {
-            let mut e = self.hash.load(idx + i);
-            if e.key == hash_key_low(key) {
+            let mut e = self.transposition_table.load(idx + i);
+            if e.key == transposition_key_low(key) {
                 e.date = date;
-                self.hash.store(idx + i, e);
+                self.transposition_table.store(idx + i, e);
                 return Some(idx + i);
             }
         }
@@ -2262,15 +2395,15 @@ impl Engine {
     }
 
     #[inline(always)]
-    pub fn probe_pv_hash(&mut self) -> Option<usize> {
-        let key = self.pos.data[self.pos.cur].key;
-        let idx = (hash_key_high(key) as usize) & self.pv_hash_mask;
+    pub fn probe_principal_variation_table(&mut self) -> Option<usize> {
+        let key = self.pos.states[self.pos.current].key;
+        let idx = (transposition_key_high(key) as usize) & self.principal_variation_mask;
         let date = self.shared.date;
         for i in 0..4 {
-            let mut e = self.pv_hash.load(idx + i);
-            if e.key == hash_key_low(key) {
+            let mut e = self.principal_variation_table.load(idx + i);
+            if e.key == transposition_key_low(key) {
                 e.date = date;
-                self.pv_hash.store(idx + i, e);
+                self.principal_variation_table.store(idx + i, e);
                 return Some(idx + i);
             }
         }
@@ -2278,15 +2411,15 @@ impl Engine {
     }
 
     #[inline(always)]
-    pub fn hash_high(&mut self, value: i32, depth: i32) {
-        let key = self.pos.data[self.pos.cur].key;
-        let base = (hash_key_high(key) as usize) & self.hash_mask;
+    pub fn store_upper_bound(&mut self, value: i32, depth: i32) {
+        let key = self.pos.states[self.pos.current].key;
+        let base = (transposition_key_high(key) as usize) & self.transposition_mask;
         let mut min_score = 0x7000_0000i32;
         let mut best = base;
         for i in 0..4 {
             let idx = base + i;
-            let mut e = self.hash.load(idx);
-            if e.key == hash_key_low(key) {
+            let mut e = self.transposition_table.load(idx);
+            if e.key == transposition_key_low(key) {
                 e.date = self.shared.date;
                 if depth > e.high_depth as i32
                     || (depth == e.high_depth as i32 && (value as i16) < e.high)
@@ -2300,7 +2433,7 @@ impl Engine {
                         e.low = value as i16;
                     }
                 }
-                self.hash.store(idx, e);
+                self.transposition_table.store(idx, e);
                 return;
             }
             let score = ((e.date as i32) << 3) + (e.high_depth.max(e.low_depth) as i32);
@@ -2309,35 +2442,35 @@ impl Engine {
                 best = idx;
             }
         }
-        let mut e = self.hash.load(best);
+        let mut e = self.transposition_table.load(best);
         e.date = self.shared.date;
-        e.key = hash_key_low(key);
+        e.key = transposition_key_low(key);
         e.high = value as i16;
         e.high_depth = depth as u8;
         e.low = 0;
         e.low_depth = 0;
-        e.mv = 0;
+        e.chess_move = 0;
         e.flags = 0;
-        self.hash.store(best, e);
+        self.transposition_table.store(best, e);
     }
 
     #[inline(always)]
-    pub fn hash_low(&mut self, mv: i32, value: i32, depth: i32) {
-        let key = self.pos.data[self.pos.cur].key;
-        let base = (hash_key_high(key) as usize) & self.hash_mask;
-        let mv = (mv & 0xFFFF) as u16;
+    pub fn store_lower_bound(&mut self, chess_move: i32, value: i32, depth: i32) {
+        let key = self.pos.states[self.pos.current].key;
+        let base = (transposition_key_high(key) as usize) & self.transposition_mask;
+        let chess_move = (chess_move & 0xFFFF) as u16;
         let mut min_score = 0x7000_0000i32;
         let mut best = base;
         for i in 0..4 {
             let idx = base + i;
-            let mut e = self.hash.load(idx);
-            if e.key == hash_key_low(key) {
+            let mut e = self.transposition_table.load(idx);
+            if e.key == transposition_key_low(key) {
                 e.date = self.shared.date;
                 if depth > e.low_depth as i32
                     || (depth == e.low_depth as i32 && (value as i16) > e.low)
                 {
-                    if mv != 0 {
-                        e.mv = mv;
+                    if chess_move != 0 {
+                        e.chess_move = chess_move;
                     }
                     if e.high >= value as i16 {
                         e.low_depth = depth as u8;
@@ -2347,10 +2480,10 @@ impl Engine {
                         e.low = value as i16;
                         e.high = value as i16;
                     }
-                } else if e.mv == 0 {
-                    e.mv = mv;
+                } else if e.chess_move == 0 {
+                    e.chess_move = chess_move;
                 }
-                self.hash.store(idx, e);
+                self.transposition_table.store(idx, e);
                 return;
             }
             let score = ((e.date as i32) << 3) + (e.high_depth.max(e.low_depth) as i32);
@@ -2359,48 +2492,48 @@ impl Engine {
                 best = idx;
             }
         }
-        let mut e = self.hash.load(best);
+        let mut e = self.transposition_table.load(best);
         e.date = self.shared.date;
-        e.key = hash_key_low(key);
+        e.key = transposition_key_low(key);
         e.high = 0;
         e.high_depth = 0;
         e.low = value as i16;
         e.low_depth = depth as u8;
-        e.mv = mv;
+        e.chess_move = chess_move;
         e.flags = 0;
-        self.hash.store(best, e);
+        self.transposition_table.store(best, e);
     }
 
-    pub fn hash_exact(
+    pub fn store_exact(
         &mut self,
-        mv: i32,
+        chess_move: i32,
         value: i32,
         depth: i32,
         exclusion: i32,
         ex_depth: i32,
         knodes: i32,
     ) {
-        let key = self.pos.data[self.pos.cur].key;
-        let base = (hash_key_high(key) as usize) & self.pv_hash_mask;
+        let key = self.pos.states[self.pos.current].key;
+        let base = (transposition_key_high(key) as usize) & self.principal_variation_mask;
         let mut min_score = 0x7000_0000i32;
         let mut best = base;
         for i in 0..4 {
             let idx = base + i;
-            let mut e = self.pv_hash.load(idx);
-            if e.key == hash_key_low(key) {
+            let mut e = self.principal_variation_table.load(idx);
+            if e.key == transposition_key_low(key) {
                 e.date = self.shared.date;
                 e.knodes += knodes;
                 if (e.depth as i32) <= depth {
                     e.value = value as i16;
                     e.depth = depth as u8;
-                    e.mv = (mv & 0xFFFF) as u16;
-                    e.ply = self.pos.data[self.pos.cur].ply as i32;
+                    e.chess_move = (chess_move & 0xFFFF) as u16;
+                    e.ply = self.pos.states[self.pos.current].ply as i32;
                     if ex_depth != 0 {
                         e.exclusion = exclusion as i16;
                         e.ex_depth = ex_depth as u8;
                     }
                 }
-                self.pv_hash.store(idx, e);
+                self.principal_variation_table.store(idx, e);
                 return;
             }
             let score = ((e.date as i32) << 3) + e.depth as i32;
@@ -2409,17 +2542,17 @@ impl Engine {
                 best = idx;
             }
         }
-        let mut e = self.pv_hash.load(best);
-        e.key = hash_key_low(key);
+        let mut e = self.principal_variation_table.load(best);
+        e.key = transposition_key_low(key);
         e.date = self.shared.date;
         e.value = value as i16;
         e.depth = depth as u8;
-        e.mv = (mv & 0xFFFF) as u16;
+        e.chess_move = (chess_move & 0xFFFF) as u16;
         e.exclusion = exclusion as i16;
         e.ex_depth = ex_depth as u8;
         e.knodes = knodes;
-        e.ply = self.pos.data[self.pos.cur].ply as i32;
-        self.pv_hash.store(best, e);
+        e.ply = self.pos.states[self.pos.current].ply as i32;
+        self.principal_variation_table.store(best, e);
     }
 }
 
@@ -2431,18 +2564,18 @@ impl Engine {
     /// `halt_check` macro.  Returns `Some(score)` when the search must unwind.
     #[inline]
     pub fn halt_check(&mut self) -> Option<i32> {
-        let cur = self.pos.cur;
-        if cur >= 126 {
+        let current = self.pos.current;
+        if current >= 126 {
             self.evaluate();
-            return Some(self.pos.data[self.pos.cur].score as i32);
+            return Some(self.pos.states[self.pos.current].score as i32);
         }
-        let st = self.pos.data[cur];
-        if st.ply >= 100 {
+        let state = self.pos.states[current];
+        if state.ply >= 100 {
             return Some(0);
         }
         let mut i = 4usize;
-        while i <= st.ply as usize {
-            if self.pos.stack[self.pos.sp - i] == st.key {
+        while i <= state.ply as usize {
+            if self.pos.stack[self.pos.stack_pointer - i] == state.key {
                 return Some(0);
             }
             i += 2;
@@ -2495,24 +2628,27 @@ impl Engine {
 
     /// `IsRepetition(margin, move)` macro.
     #[inline]
-    pub fn is_repetition(&self, margin: i32, mv: Move) -> bool {
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
+    pub fn is_repetition(&self, margin: i32, chess_move: Move) -> bool {
+        let current = self.pos.current;
+        let state = self.pos.states[current];
         margin > 0
-            && st.ply >= 2
-            && self.pos.data[cur - 1].mv as i32
-                == ((move_to(mv) as i32) << 6) | move_from(mv) as i32
-            && self.pos.board.square[move_to(mv)] == 0
-            && (mv & 0xF000) == 0
+            && state.ply >= 2
+            && self.pos.states[current - 1].chess_move as i32
+                == ((move_to(chess_move) as i32) << 6) | move_from(chess_move) as i32
+            && self.pos.board.squares[move_to(chess_move)] == 0
+            && (chess_move & 0xF000) == 0
     }
 
-    /// `extension<pv>(move, depth)`.
+    /// `extension<principal_variation>(move, depth)`.
     #[inline]
-    pub fn extension(&self, pv: bool, mv: Move, depth: i32) -> i32 {
-        let from = move_from(mv);
-        let st = self.pos.data[self.pos.cur];
-        if (st.passer & bit(from)) != 0 && crank(st.turn as Color, from) >= 5 && depth < 16 {
-            if pv {
+    pub fn extension(&self, principal_variation: bool, chess_move: Move, depth: i32) -> i32 {
+        let from = move_from(chess_move);
+        let state = self.pos.states[self.pos.current];
+        if (state.passed_pawns & bit(from)) != 0
+            && relative_rank(state.side_to_move as Color, from) >= 5
+            && depth < 16
+        {
+            if principal_variation {
                 2
             } else {
                 1
@@ -2522,28 +2658,29 @@ impl Engine {
         }
     }
 
-    /// `capture_margin<me>`: restrict the capture mask when far below alpha.
-    pub fn capture_margin(&mut self, me: Color, alpha: i32, score: &mut i32) {
-        let cur = self.pos.cur;
-        let st = self.pos.data[cur];
-        let s = st.score as i32;
+    /// `capture_margin<color>`: restrict the capture mask when far below alpha.
+    pub fn capture_margin(&mut self, color: Color, alpha: i32, score: &mut i32) {
+        let current = self.pos.current;
+        let state = self.pos.states[current];
+        let s = state.score as i32;
         if s + 200 < alpha {
-            if (st.att[me] & self.pawn(opp(me))) != 0 {
-                self.pos.data[cur].mask ^= self.pawn(opp(me));
+            if (state.attacks[color] & self.pawn(opponent(color))) != 0 {
+                self.pos.states[current].move_mask ^= self.pawn(opponent(color));
                 *score = s + 200;
             }
             if s + 500 < alpha {
-                if (st.att[me] & self.minor(opp(me))) != 0 {
-                    self.pos.data[cur].mask ^= self.minor(opp(me));
+                if (state.attacks[color] & self.minor(opponent(color))) != 0 {
+                    self.pos.states[current].move_mask ^= self.minor(opponent(color));
                     *score = s + 500;
                 }
                 if s + 700 < alpha {
-                    if (st.att[me] & self.rook(opp(me))) != 0 {
-                        self.pos.data[cur].mask ^= self.rook(opp(me));
+                    if (state.attacks[color] & self.rook(opponent(color))) != 0 {
+                        self.pos.states[current].move_mask ^= self.rook(opponent(color));
                         *score = s + 700;
                     }
-                    if s + 1400 < alpha && (st.att[me] & self.queen(opp(me))) != 0 {
-                        self.pos.data[cur].mask ^= self.queen(opp(me));
+                    if s + 1400 < alpha && (state.attacks[color] & self.queen(opponent(color))) != 0
+                    {
+                        self.pos.states[current].move_mask ^= self.queen(opponent(color));
                         *score = s + 1400;
                     }
                 }
@@ -2551,35 +2688,35 @@ impl Engine {
         }
     }
 
-    /// `singular_extension<me>`
+    /// `singular_extension<color>`
     #[allow(clippy::too_many_arguments)]
     pub fn singular_extension(
         &mut self,
-        me: Color,
+        color: Color,
         ext: i32,
         prev_ext: i32,
         margin_one: i32,
         margin_two: i32,
         depth: i32,
-        killer: i32,
+        killer_move: i32,
     ) -> i32 {
         let mut value = -MATE_VALUE;
         let mut singular = 0;
         if ext < 1 + i32::from(prev_ext < 1) {
-            value = if self.check(me) {
-                self.search_evasion(me, true, margin_one, depth, killer)
+            value = if self.check(color) {
+                self.search_evasions(color, true, margin_one, depth, killer_move)
             } else {
-                self.search(me, true, margin_one, depth, killer)
+                self.search(color, true, margin_one, depth, killer_move)
             };
             if value < margin_one {
                 singular = 1;
             }
         }
         if value < margin_one && ext < 2 + i32::from(prev_ext < 1) - i32::from(prev_ext >= 2) {
-            value = if self.check(me) {
-                self.search_evasion(me, true, margin_two, depth, killer)
+            value = if self.check(color) {
+                self.search_evasions(color, true, margin_two, depth, killer_move)
             } else {
-                self.search(me, true, margin_two, depth, killer)
+                self.search(color, true, margin_two, depth, killer_move)
             };
             if value < margin_two {
                 singular = 2;
@@ -2588,40 +2725,48 @@ impl Engine {
         singular
     }
 
-    /// `pick_pv`: fill `pv[pv_ptr..]` from the hash tables.
+    /// `pick_principal_variation`: fill `principal_variation[principal_variation_index..]` from the hash tables.
     #[allow(unused_assignments)]
-    pub fn pick_pv(&mut self, pv: &mut [i32], pv_ptr: usize, pv_len: usize) {
-        if pv_ptr >= pv_len.min(MAX_PV_LEN - 1) {
-            pv[pv_ptr] = 0;
+    pub fn pick_principal_variation(
+        &mut self,
+        principal_variation: &mut [i32],
+        principal_variation_index: usize,
+        principal_variation_length: usize,
+    ) {
+        if principal_variation_index >= principal_variation_length.min(MAX_PV_LEN - 1) {
+            principal_variation[principal_variation_index] = 0;
             return;
         }
         let mut depth = -256;
-        let mut mv = 0;
-        if let Some(idx) = self.probe_hash() {
-            let e = self.hash.load(idx);
-            if e.mv != 0 && (e.low_depth as i32) > depth {
+        let mut chess_move = 0;
+        if let Some(idx) = self.probe_transposition_table() {
+            let e = self.transposition_table.load(idx);
+            if e.chess_move != 0 && (e.low_depth as i32) > depth {
                 depth = e.low_depth as i32;
-                mv = e.mv as i32;
+                chess_move = e.chess_move as i32;
             }
         }
-        if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash.load(idx);
-            if e.mv != 0 && (e.depth as i32) > depth {
+        if let Some(idx) = self.probe_principal_variation_table() {
+            let e = self.principal_variation_table.load(idx);
+            if e.chess_move != 0 && (e.depth as i32) > depth {
                 depth = e.depth as i32;
-                mv = e.mv as i32;
+                chess_move = e.chess_move as i32;
             }
         }
-        let me = self.pos.data[self.pos.cur].turn as Color;
-        if mv != 0 && !self.is_illegal(me, mv) && self.is_legal(me, mv) {
-            pv[pv_ptr] = mv;
-            self.do_move(me, mv);
-            let cur = self.pos.cur;
-            let st = self.pos.data[cur];
-            let mut cycle = st.ply >= 100;
+        let color = self.pos.states[self.pos.current].side_to_move as Color;
+        if chess_move != 0
+            && !self.is_illegal(color, chess_move)
+            && self.is_legal(color, chess_move)
+        {
+            principal_variation[principal_variation_index] = chess_move;
+            self.make_move(color, chess_move);
+            let current = self.pos.current;
+            let state = self.pos.states[current];
+            let mut cycle = state.ply >= 100;
             if !cycle {
                 let mut i = 4usize;
-                while i <= st.ply as usize {
-                    if self.pos.stack[self.pos.sp - i] == st.key {
+                while i <= state.ply as usize {
+                    if self.pos.stack[self.pos.stack_pointer - i] == state.key {
                         cycle = true;
                         break;
                     }
@@ -2629,95 +2774,106 @@ impl Engine {
                 }
             }
             if cycle {
-                pv[pv_ptr + 1] = 0;
+                principal_variation[principal_variation_index + 1] = 0;
             } else {
-                self.pick_pv(pv, pv_ptr + 1, pv_len);
+                self.pick_principal_variation(
+                    principal_variation,
+                    principal_variation_index + 1,
+                    principal_variation_length,
+                );
             }
-            let undo_me = (self.pos.data[self.pos.cur].turn ^ 1) as Color;
-            self.undo_move(undo_me, mv);
+            let undo_me = (self.pos.states[self.pos.current].side_to_move ^ 1) as Color;
+            self.unmake_move(undo_me, chess_move);
         } else {
-            pv[pv_ptr] = 0;
+            principal_variation[principal_variation_index] = 0;
         }
     }
 
-    /// `draw_in_pv<me>`
-    pub fn draw_in_pv(&mut self, me: Color) -> bool {
-        let cur = self.pos.cur;
-        if cur >= 126 || self.pos.data[cur].ply >= 100 {
+    /// `draw_in_principal_variation<color>`
+    pub fn draw_in_principal_variation(&mut self, color: Color) -> bool {
+        let current = self.pos.current;
+        if current >= 126 || self.pos.states[current].ply >= 100 {
             return true;
         }
-        let st = self.pos.data[cur];
+        let state = self.pos.states[current];
         let mut i = 4usize;
-        while i <= st.ply as usize {
-            if self.pos.stack[self.pos.sp - i] == st.key {
+        while i <= state.ply as usize {
+            if self.pos.stack[self.pos.stack_pointer - i] == state.key {
                 return true;
             }
             i += 2;
         }
-        if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash.load(idx);
+        if let Some(idx) = self.probe_principal_variation_table() {
+            let e = self.principal_variation_table.load(idx);
             if e.value == 0 {
                 return true;
             }
-            let mv = e.mv as i32;
-            if mv != 0 {
-                self.do_move(me, mv);
-                let value = self.draw_in_pv(opp(me));
-                self.undo_move(me, mv);
+            let chess_move = e.chess_move as i32;
+            if chess_move != 0 {
+                self.make_move(color, chess_move);
+                let value = self.draw_in_principal_variation(opponent(color));
+                self.unmake_move(color, chess_move);
                 return value;
             }
         }
         false
     }
 
-    /// `send_pv` (single PV).
-    pub fn send_pv(&mut self, depth: i32, _alpha: i32, _beta: i32, _score: i32) {
-        if self.settings.multi_pv > 1 {
+    /// `send_principal_variation` (has_single_bit PV).
+    pub fn send_principal_variation(&mut self, depth: i32, _alpha: i32, _beta: i32, _score: i32) {
+        if self.settings.multi_principal_variation > 1 {
             return;
         }
-        let mut sel_depth = 1usize;
-        while sel_depth < 127 && self.pos.data[sel_depth].att[0] != 0 {
-            sel_depth += 1;
+        let mut selective_depth = 1usize;
+        while selective_depth < 127 && self.pos.states[selective_depth].attacks[0] != 0 {
+            selective_depth += 1;
         }
-        sel_depth -= 1;
-        let mv = if self.stats.best_move == 0 {
+        selective_depth -= 1;
+        let chess_move = if self.stats.best_move == 0 {
             self.root_list[0]
         } else {
             self.stats.best_move
         };
-        self.stats.sel_depth = sel_depth as i32;
-        let mut pv = [0i32; 64];
-        let me = self.pos.data[self.pos.cur].turn as Color;
-        if mv != 0 && !self.is_illegal(me, mv) && self.is_legal(me, mv) {
-            pv[0] = mv;
-            self.do_move(me, mv);
-            self.pick_pv(&mut pv, 1, 64);
-            let undo_me = (self.pos.data[self.pos.cur].turn ^ 1) as Color;
-            self.undo_move(undo_me, mv);
+        self.stats.selective_depth = selective_depth as i32;
+        let mut principal_variation = [0i32; 64];
+        let color = self.pos.states[self.pos.current].side_to_move as Color;
+        if chess_move != 0
+            && !self.is_illegal(color, chess_move)
+            && self.is_legal(color, chess_move)
+        {
+            principal_variation[0] = chess_move;
+            self.make_move(color, chess_move);
+            self.pick_principal_variation(&mut principal_variation, 1, 64);
+            let undo_me = (self.pos.states[self.pos.current].side_to_move ^ 1) as Color;
+            self.unmake_move(undo_me, chess_move);
         }
-        self.stats.pv = pv;
+        self.stats.principal_variation = principal_variation;
         let elapsed = {
-            let t = now_ms().saturating_sub(self.shared.start_time);
-            t.max(1)
+            let elapsed = now_ms().saturating_sub(self.shared.start_time);
+            elapsed.max(1)
         };
         self.publish_nodes();
         let nodes = self.total_nodes();
         let info = Info {
             multipv: 0,
             depth: depth / 2,
-            sel_depth: sel_depth as i32 / 2,
+            selective_depth: selective_depth as i32 / 2,
             score: self.stats.best_score,
             nodes,
-            tb_hits: self.pos.tb_hits,
+            tablebase_hits: self.pos.tablebase_hits,
             time_ms: elapsed,
-            pv: pv.iter().copied().take_while(|&m| m != 0).collect(),
+            principal_variation: principal_variation
+                .iter()
+                .copied()
+                .take_while(|&m| m != 0)
+                .collect(),
         };
-        self.reporter.pv(&info);
+        self.reporter.principal_variation(&info);
     }
 
-    /// `send_curr_move`.
-    pub fn send_curr_move(&mut self, mv: i32, cnt: i32) {
-        if self.stats.id != 0 {
+    /// `send_current_move`.
+    pub fn send_current_move(&mut self, chess_move: i32, cnt: i32) {
+        if self.stats.thread_id != 0 {
             return;
         }
         let now = now_ms();
@@ -2728,32 +2884,33 @@ impl Engine {
         }
         self.info_time = now as i64;
         let elapsed = now.saturating_sub(self.shared.start_time);
-        self.reporter.curr_move(mv, cnt, elapsed, self.pos.nodes);
+        self.reporter
+            .curr_move(chess_move, cnt, elapsed, self.pos.nodes);
     }
 
-    /// `send_multipv`.
-    pub fn send_multipv(&mut self, depth: i32, curr_number: i32) {
-        if self.stats.id != 0 {
+    /// `send_multi_principal_variation`.
+    pub fn send_multi_principal_variation(&mut self, depth: i32, curr_number: i32) {
+        if self.stats.thread_id != 0 {
             return;
         }
-        let pvn = self.settings.multi_pv;
+        let pvn = self.settings.multi_principal_variation;
         for j in 0..pvn {
-            let m = self.multi_pv[j];
+            let m = self.multi_principal_variation[j];
             if m == 0 {
                 break;
             }
-            let mv = m & 0xFFFF;
+            let chess_move = m & 0xFFFF;
             let score = m >> 16;
-            let mut pv = [0i32; 64];
-            let me = self.pos.data[self.pos.cur].turn as Color;
-            pv[0] = mv;
-            self.do_move(me, mv);
-            self.pick_pv(&mut pv, 1, 64);
-            let undo_me = (self.pos.data[self.pos.cur].turn ^ 1) as Color;
-            self.undo_move(undo_me, mv);
+            let mut principal_variation = [0i32; 64];
+            let color = self.pos.states[self.pos.current].side_to_move as Color;
+            principal_variation[0] = chess_move;
+            self.make_move(color, chess_move);
+            self.pick_principal_variation(&mut principal_variation, 1, 64);
+            let undo_me = (self.pos.states[self.pos.current].side_to_move ^ 1) as Color;
+            self.unmake_move(undo_me, chess_move);
             let elapsed = {
-                let t = now_ms().saturating_sub(self.shared.start_time);
-                t.max(1)
+                let elapsed = now_ms().saturating_sub(self.shared.start_time);
+                elapsed.max(1)
             };
             let nodes = self.pos.nodes;
             let info = Info {
@@ -2763,20 +2920,24 @@ impl Engine {
                 } else {
                     depth - 1
                 } / 2,
-                sel_depth: self.stats.sel_depth / 2,
+                selective_depth: self.stats.selective_depth / 2,
                 score,
                 nodes,
-                tb_hits: self.pos.tb_hits,
+                tablebase_hits: self.pos.tablebase_hits,
                 time_ms: elapsed,
-                pv: pv.iter().copied().take_while(|&m| m != 0).collect(),
+                principal_variation: principal_variation
+                    .iter()
+                    .copied()
+                    .take_while(|&m| m != 0)
+                    .collect(),
             };
-            self.stats.pv = pv;
-            self.reporter.pv(&info);
+            self.stats.principal_variation = principal_variation;
+            self.reporter.principal_variation(&info);
         }
     }
 
     /// `time_to_stop`.
-    pub fn time_to_stop(&self, si: &SearchInfo, time: i64, searching: bool) -> bool {
+    pub fn time_to_stop(&self, search_info: &SearchInfo, time: i64, searching: bool) -> bool {
         if self.shared.ponder {
             return false;
         }
@@ -2789,31 +2950,31 @@ impl Engine {
         if 2 * time as u64 > self.shared.hard_time_limit {
             return true;
         }
-        if si.bad != 0 {
+        if search_info.bad != 0 {
             return false;
         }
         if time as u64 > self.shared.soft_time_limit {
             return true;
         }
-        if si.change != 0 || si.fail_low != 0 {
+        if search_info.change != 0 || search_info.fail_low != 0 {
             return false;
         }
         if time as u64 * 100 > self.shared.soft_time_limit * TIME_NO_CHANGE_MARGIN {
             return true;
         }
-        if si.early == 0 {
+        if search_info.early == 0 {
             return false;
         }
         if time as u64 * 100 > self.shared.soft_time_limit * TIME_NO_PVSCO_MARGIN {
             return true;
         }
-        if si.singular < 1 {
+        if search_info.singular < 1 {
             return false;
         }
         if time as u64 * 100 > self.shared.soft_time_limit * TIME_SING_ONE_MARGIN {
             return true;
         }
-        if si.singular < 2 {
+        if search_info.singular < 2 {
             return false;
         }
         if time as u64 * 100 > self.shared.soft_time_limit * TIME_SING_TWO_MARGIN {
@@ -2830,43 +2991,43 @@ impl Engine {
 impl Engine {
     #[inline(always)]
     pub fn score(&self) -> i32 {
-        self.pos.data[self.pos.cur].score as i32
+        self.pos.states[self.pos.current].score as i32
     }
 
     #[inline(always)]
-    fn delta_m(&self, mv: Move) -> i32 {
-        let piece = self.pos.board.square[move_from(mv)] as usize;
-        self.delta[(piece << 12) | (move_from(mv) << 6) | move_to(mv)] as i32
+    fn delta_m(&self, chess_move: Move) -> i32 {
+        let piece = self.pos.board.squares[move_from(chess_move)] as usize;
+        self.delta[(piece << 12) | (move_from(chess_move) << 6) | move_to(chess_move)] as i32
     }
 
     #[inline(always)]
-    fn ref_index(&self, mv: Move) -> usize {
-        let to = move_to(mv);
-        ((self.pos.board.square[to] as usize) << 6) | to
+    fn ref_index(&self, chess_move: Move) -> usize {
+        let to = move_to(chess_move);
+        ((self.pos.board.squares[to] as usize) << 6) | to
     }
 
     #[inline(always)]
     fn update_ref(&mut self, ref_move: i32) {
-        let cur = self.pos.cur;
-        let mv = self.pos.data[cur].mv as i32;
-        if mv == 0 {
+        let current = self.pos.current;
+        let chess_move = self.pos.states[current].chess_move as i32;
+        if chess_move == 0 {
             return;
         }
-        let idx = self.ref_index(mv);
-        if self.reference[idx].refs[0] as i32 != ref_move {
-            self.reference[idx].refs[1] = self.reference[idx].refs[0];
-            self.reference[idx].refs[0] = ref_move as u16;
+        let idx = self.ref_index(chess_move);
+        if self.reference[idx].refutation_moves[0] as i32 != ref_move {
+            self.reference[idx].refutation_moves[1] = self.reference[idx].refutation_moves[0];
+            self.reference[idx].refutation_moves[0] = ref_move as u16;
         }
     }
 
     #[inline(always)]
     fn update_check_ref(&mut self, ref_move: i32) {
-        let cur = self.pos.cur;
-        let mv = self.pos.data[cur].mv as i32;
-        if mv == 0 {
+        let current = self.pos.current;
+        let chess_move = self.pos.states[current].chess_move as i32;
+        if chess_move == 0 {
             return;
         }
-        let idx = self.ref_index(mv);
+        let idx = self.ref_index(chess_move);
         if self.reference[idx].check_refs[0] as i32 != ref_move {
             self.reference[idx].check_refs[1] = self.reference[idx].check_refs[0];
             self.reference[idx].check_refs[0] = ref_move as u16;
@@ -2880,28 +3041,28 @@ impl Engine {
     }
 
     #[inline(always)]
-    fn history_good(&mut self, mv: Move, depth: i32) {
-        let piece = self.pos.board.square[move_from(mv)] as usize;
-        let idx = (piece << 6) | move_to(mv);
+    fn history_good(&mut self, chess_move: Move, depth: i32) {
+        let piece = self.pos.board.squares[move_from(chess_move)] as usize;
+        let idx = (piece << 6) | move_to(chess_move);
         let inc = Self::history_inc(depth);
-        let h = self.history[idx] as i32;
-        self.history[idx] = if (h & 0x00FF) >= 256 - inc {
-            (((h & 0xFEFE) >> 1) + ((inc << 8) | inc)) as i16
+        let history = self.history[idx] as i32;
+        self.history[idx] = if (history & 0x00FF) >= 256 - inc {
+            (((history & 0xFEFE) >> 1) + ((inc << 8) | inc)) as i16
         } else {
-            (h + ((inc << 8) | inc)) as i16
+            (history + ((inc << 8) | inc)) as i16
         };
     }
 
     #[inline(always)]
-    fn history_bad(&mut self, mv: Move, depth: i32) {
-        let piece = self.pos.board.square[move_from(mv)] as usize;
-        let idx = (piece << 6) | move_to(mv);
+    fn history_bad(&mut self, chess_move: Move, depth: i32) {
+        let piece = self.pos.board.squares[move_from(chess_move)] as usize;
+        let idx = (piece << 6) | move_to(chess_move);
         let inc = Self::history_inc(depth);
-        let h = self.history[idx] as i32;
-        self.history[idx] = if (h & 0x00FF) >= 256 - inc {
-            (((h & 0xFEFE) >> 1) + inc) as i16
+        let history = self.history[idx] as i32;
+        self.history[idx] = if (history & 0x00FF) >= 256 - inc {
+            (((history & 0xFEFE) >> 1) + inc) as i16
         } else {
-            (h + inc) as i16
+            (history + inc) as i16
         };
     }
 
@@ -2922,10 +3083,10 @@ impl Engine {
 
 impl Engine {
     #[allow(unused_assignments)]
-    pub fn q_search(
+    pub fn quiescence_search(
         &mut self,
-        me: Color,
-        pv: bool,
+        color: Color,
+        principal_variation: bool,
         mut alpha: i32,
         beta: i32,
         depth: i32,
@@ -2939,8 +3100,15 @@ impl Engine {
         if (flags & FLAG_CALL_EVALUATION) != 0 {
             self.evaluate();
         }
-        if self.check(me) {
-            return self.q_evasion(me, pv, alpha, beta, depth, FLAG_HASH_CHECK);
+        if self.check(color) {
+            return self.quiescence_search_evasions(
+                color,
+                principal_variation,
+                alpha,
+                beta,
+                depth,
+                FLAG_HASH_CHECK,
+            );
         }
         let mut score = self.score() + 3;
         if score > alpha {
@@ -2953,55 +3121,56 @@ impl Engine {
         let mut hash_move = 0;
         let mut hash_depth = 0;
         if (flags & FLAG_HASH_CHECK) != 0 {
-            if let Some(idx) = self.probe_hash() {
-                let e = self.hash.load(idx);
+            if let Some(idx) = self.probe_transposition_table() {
+                let e = self.transposition_table.load(idx);
                 if e.low_depth != 0 {
-                    if e.low as i32 >= beta && !pv {
+                    if e.low as i32 >= beta && !principal_variation {
                         return e.low as i32;
                     }
-                    if (e.low_depth as i32) > hash_depth && e.mv != 0 {
-                        hash_move = e.mv as i32;
+                    if (e.low_depth as i32) > hash_depth && e.chess_move != 0 {
+                        hash_move = e.chess_move as i32;
                         hash_depth = e.low_depth as i32;
                     }
                 }
-                if e.high_depth != 0 && (e.high as i32) <= alpha && !pv {
+                if e.high_depth != 0 && (e.high as i32) <= alpha && !principal_variation {
                     return e.high as i32;
                 }
             }
         }
 
-        self.pos.data[self.pos.cur].mask = self.piece(opp(me));
-        self.capture_margin(me, alpha, &mut score);
+        self.pos.states[self.pos.current].move_mask = self.piece(opponent(color));
+        self.capture_margin(color, alpha, &mut score);
 
         let mut cnt = 0;
         let mut cut_move = 0;
         'q: {
             if hash_move != 0 {
-                let skip = (bit(move_to(hash_move)) & self.pos.data[self.pos.cur].mask) == 0
+                let skip = (bit(move_to(hash_move)) & self.pos.states[self.pos.current].move_mask)
+                    == 0
                     && (hash_move & 0xE000) == 0
                     && (depth < -8
                         || (self.score() + self.delta_m(hash_move) <= alpha
-                            && !self.is_check(me, hash_move)));
+                            && !self.is_check(color, hash_move)));
                 if !skip {
-                    if self.is_legal(me, hash_move) {
-                        if self.is_illegal(me, hash_move) {
+                    if self.is_legal(color, hash_move) {
+                        if self.is_illegal(color, hash_move) {
                             // skip
                         } else {
-                            if SEE_VALUE[self.pos.board.square[move_to(hash_move)] as usize]
-                                > SEE_VALUE[self.pos.board.square[move_from(hash_move)] as usize]
+                            if SEE_VALUE[self.pos.board.squares[move_to(hash_move)] as usize]
+                                > SEE_VALUE[self.pos.board.squares[move_from(hash_move)] as usize]
                             {
                                 cnt += 1;
                             }
-                            self.do_move(me, hash_move);
-                            let value = -self.q_search(
-                                opp(me),
-                                pv,
+                            self.make_move(color, hash_move);
+                            let value = -self.quiescence_search(
+                                opponent(color),
+                                principal_variation,
                                 -beta,
                                 -alpha,
                                 depth - 1,
                                 FLAG_NEAT_SEARCH,
                             );
-                            self.undo_move(me, hash_move);
+                            self.unmake_move(color, hash_move);
                             if value > score {
                                 score = value;
                                 if value > alpha {
@@ -3012,11 +3181,13 @@ impl Engine {
                                     }
                                 }
                             }
-                            if (bit(move_to(hash_move)) & self.pos.data[self.pos.cur].mask) == 0
+                            if (bit(move_to(hash_move))
+                                & self.pos.states[self.pos.current].move_mask)
+                                == 0
                                 && (hash_move & 0xE000) == 0
                                 && (depth < -2 || (depth <= -1 && self.score() + 50 < alpha))
                                 && alpha >= beta - 1
-                                && !pv
+                                && !principal_variation
                             {
                                 return alpha;
                             }
@@ -3024,36 +3195,43 @@ impl Engine {
                     }
                 }
             }
-            self.gen_captures(me);
-            self.pos.data[self.pos.cur].current = 0;
+            self.generate_captures(color);
+            self.pos.states[self.pos.current].current = 0;
             loop {
-                let mv = self.pick_move();
-                if mv == 0 {
+                let chess_move = self.pick_move();
+                if chess_move == 0 {
                     break;
                 }
-                if mv == hash_move {
+                if chess_move == hash_move {
                     continue;
                 }
-                if self.is_illegal(me, mv) {
+                if self.is_illegal(color, chess_move) {
                     continue;
                 }
-                if !self.see(me, mv, -50) {
+                if !self.static_exchange_evaluation(color, chess_move, -50) {
                     continue;
                 }
-                if SEE_VALUE[self.pos.board.square[move_to(mv)] as usize]
-                    > SEE_VALUE[self.pos.board.square[move_from(mv)] as usize]
+                if SEE_VALUE[self.pos.board.squares[move_to(chess_move)] as usize]
+                    > SEE_VALUE[self.pos.board.squares[move_from(chess_move)] as usize]
                 {
                     cnt += 1;
                 }
-                self.do_move(me, mv);
-                let value = -self.q_search(opp(me), pv, -beta, -alpha, depth - 1, FLAG_NEAT_SEARCH);
-                self.undo_move(me, mv);
+                self.make_move(color, chess_move);
+                let value = -self.quiescence_search(
+                    opponent(color),
+                    principal_variation,
+                    -beta,
+                    -alpha,
+                    depth - 1,
+                    FLAG_NEAT_SEARCH,
+                );
+                self.unmake_move(color, chess_move);
                 if value > score {
                     score = value;
                     if value > alpha {
                         alpha = value;
                         if value >= beta {
-                            cut_move = mv;
+                            cut_move = chess_move;
                             break 'q;
                         }
                     }
@@ -3066,86 +3244,107 @@ impl Engine {
             if depth <= -1 && self.score() + 50 < alpha {
                 break 'q;
             }
-            self.gen_checks(me);
-            self.pos.data[self.pos.cur].current = 0;
+            self.generate_checks(color);
+            self.pos.states[self.pos.current].current = 0;
             loop {
-                let mv = self.pick_move();
-                if mv == 0 {
+                let chess_move = self.pick_move();
+                if chess_move == 0 {
                     break;
                 }
-                if mv == hash_move {
+                if chess_move == hash_move {
                     continue;
                 }
-                if self.is_illegal(me, mv) {
+                if self.is_illegal(color, chess_move) {
                     continue;
                 }
-                if self.is_repetition(alpha + 1, mv) {
+                if self.is_repetition(alpha + 1, chess_move) {
                     continue;
                 }
-                if !self.see(me, mv, -50) {
+                if !self.static_exchange_evaluation(color, chess_move, -50) {
                     continue;
                 }
-                self.do_move(me, mv);
-                let value =
-                    -self.q_evasion(opp(me), pv, -beta, -alpha, depth - 1, FLAG_NEAT_SEARCH);
-                self.undo_move(me, mv);
+                self.make_move(color, chess_move);
+                let value = -self.quiescence_search_evasions(
+                    opponent(color),
+                    principal_variation,
+                    -beta,
+                    -alpha,
+                    depth - 1,
+                    FLAG_NEAT_SEARCH,
+                );
+                self.unmake_move(color, chess_move);
                 if value > score {
                     score = value;
                     if value > alpha {
                         alpha = value;
                         if value >= beta {
-                            cut_move = mv;
+                            cut_move = chess_move;
                             break 'q;
                         }
                     }
                 }
             }
 
-            let st = self.pos.data[self.pos.cur];
-            let oppc = opp(me);
+            let state = self.pos.states[self.pos.current];
+            let opponent_color = opponent(color);
             let delta_ok = cnt != 0
                 || self.score() + 30 < alpha
-                || (st.threat & self.piece(me)) != 0
-                || ((st.xray[oppc] | st.pin[oppc]) & self.non_pawn(oppc)) != 0
-                || (self.pawn(oppc) & self.line(me, 1) & Self::shift(me, !self.piece_all())) != 0;
+                || (state.threats & self.piece(color)) != 0
+                || ((state.xray_attacks[opponent_color] | state.pinned_pieces[opponent_color])
+                    & self.non_pawn(opponent_color))
+                    != 0
+                || (self.pawn(opponent_color)
+                    & self.line(color, 1)
+                    & Self::shift(color, !self.piece_all()))
+                    != 0;
             if delta_ok {
                 break 'q;
             }
-            self.pos.data[self.pos.cur].margin = alpha - self.score() + 6;
-            self.gen_delta_moves(me);
-            self.pos.data[self.pos.cur].current = 0;
+            self.pos.states[self.pos.current].margin = alpha - self.score() + 6;
+            self.generate_delta_moves(color);
+            self.pos.states[self.pos.current].current = 0;
             loop {
-                let mv = self.pick_move();
-                if mv == 0 {
+                let chess_move = self.pick_move();
+                if chess_move == 0 {
                     break;
                 }
-                if mv == hash_move {
+                if chess_move == hash_move {
                     continue;
                 }
-                if self.is_illegal(me, mv) {
+                if self.is_illegal(color, chess_move) {
                     continue;
                 }
-                if self.is_repetition(alpha + 1, mv) {
+                if self.is_repetition(alpha + 1, chess_move) {
                     continue;
                 }
-                if !self.see(me, mv, -50) {
+                if !self.static_exchange_evaluation(color, chess_move, -50) {
                     continue;
                 }
                 cnt += 1;
-                self.do_move(me, mv);
-                let value = -self.q_search(opp(me), pv, -beta, -alpha, depth - 1, FLAG_NEAT_SEARCH);
-                self.undo_move(me, mv);
+                self.make_move(color, chess_move);
+                let value = -self.quiescence_search(
+                    opponent(color),
+                    principal_variation,
+                    -beta,
+                    -alpha,
+                    depth - 1,
+                    FLAG_NEAT_SEARCH,
+                );
+                self.unmake_move(color, chess_move);
                 if value > score {
                     score = value;
                     if value > alpha {
                         alpha = value;
                         if value >= beta {
-                            if self.pos.data[self.pos.cur].killer[1] as i32 != mv {
-                                self.pos.data[self.pos.cur].killer[2] =
-                                    self.pos.data[self.pos.cur].killer[1];
-                                self.pos.data[self.pos.cur].killer[1] = mv as u16;
+                            if self.pos.states[self.pos.current].killer_moves[1] as i32
+                                != chess_move
+                            {
+                                self.pos.states[self.pos.current].killer_moves[2] =
+                                    self.pos.states[self.pos.current].killer_moves[1];
+                                self.pos.states[self.pos.current].killer_moves[1] =
+                                    chess_move as u16;
                             }
-                            cut_move = mv;
+                            cut_move = chess_move;
                             break 'q;
                         }
                     }
@@ -3156,26 +3355,26 @@ impl Engine {
             }
         }
         if cut_move != 0 {
-            self.hash_low(cut_move, score, 1);
+            self.store_lower_bound(cut_move, score, 1);
             return score;
         }
         if depth >= -2 && (depth >= 0 || self.score() + 50 >= alpha) {
-            self.hash_high(score, 1);
+            self.store_upper_bound(score, 1);
         }
         score
     }
 
     #[allow(unused_assignments)]
-    pub fn q_evasion(
+    pub fn quiescence_search_evasions(
         &mut self,
-        me: Color,
-        pv: bool,
+        color: Color,
+        principal_variation: bool,
         mut alpha: i32,
         beta: i32,
         depth: i32,
         flags: i32,
     ) -> i32 {
-        let mut score = self.pos.cur as i32 - MATE_VALUE;
+        let mut score = self.pos.current as i32 - MATE_VALUE;
         if (flags & FLAG_HALT_CHECK) != 0 {
             if let Some(v) = self.halt_check() {
                 return v;
@@ -3184,18 +3383,18 @@ impl Engine {
         let mut hash_move = 0;
         let mut hash_depth = 0;
         if (flags & FLAG_HASH_CHECK) != 0 {
-            if let Some(idx) = self.probe_hash() {
-                let e = self.hash.load(idx);
+            if let Some(idx) = self.probe_transposition_table() {
+                let e = self.transposition_table.load(idx);
                 if e.low_depth != 0 {
-                    if e.low as i32 >= beta && !pv {
+                    if e.low as i32 >= beta && !principal_variation {
                         return e.low as i32;
                     }
-                    if (e.low_depth as i32) > hash_depth && e.mv != 0 {
-                        hash_move = e.mv as i32;
+                    if (e.low_depth as i32) > hash_depth && e.chess_move != 0 {
+                        hash_move = e.chess_move as i32;
                         hash_depth = e.low_depth as i32;
                     }
                 }
-                if e.high_depth != 0 && (e.high as i32) <= alpha && !pv {
+                if e.high_depth != 0 && (e.high as i32) <= alpha && !principal_variation {
                     return e.high as i32;
                 }
             }
@@ -3203,38 +3402,38 @@ impl Engine {
         if (flags & FLAG_CALL_EVALUATION) != 0 {
             self.evaluate();
         }
-        self.pos.data[self.pos.cur].mask = !0u64;
-        if self.score() - 10 <= alpha && !pv {
-            self.pos.data[self.pos.cur].mask = self.piece(opp(me));
+        self.pos.states[self.pos.current].move_mask = !0u64;
+        if self.score() - 10 <= alpha && !principal_variation {
+            self.pos.states[self.pos.current].move_mask = self.piece(opponent(color));
             score = self.score() - 10;
-            self.capture_margin(me, alpha, &mut score);
+            self.capture_margin(color, alpha, &mut score);
         }
         alpha = alpha.max(score);
         let mut pext = 0;
-        self.gen_evasions(me);
-        self.pos.data[self.pos.cur].current = 0;
-        if self.move_lists[self.pos.cur][0] == 0 {
+        self.generate_evasions(color);
+        self.pos.states[self.pos.current].current = 0;
+        if self.move_lists[self.pos.current][0] == 0 {
             return score;
         }
-        if self.move_lists[self.pos.cur][1] == 0 {
+        if self.move_lists[self.pos.current][1] == 0 {
             pext = 1;
         } else {
-            let cur = self.pos.cur;
-            let mv = self.pos.data[cur].mv as i32;
-            if mv != 0 {
-                let idx = self.ref_index(mv);
-                self.pos.data[cur].refs[0] = self.reference[idx].check_refs[0];
-                self.pos.data[cur].refs[1] = self.reference[idx].check_refs[1];
+            let current = self.pos.current;
+            let chess_move = self.pos.states[current].chess_move as i32;
+            if chess_move != 0 {
+                let idx = self.ref_index(chess_move);
+                self.pos.states[current].refutation_moves[0] = self.reference[idx].check_refs[0];
+                self.pos.states[current].refutation_moves[1] = self.reference[idx].check_refs[1];
             }
             self.mark_evasions();
             if hash_move != 0
-                && (((bit(move_to(hash_move)) & self.pos.data[cur].mask) != 0)
+                && (((bit(move_to(hash_move)) & self.pos.states[current].move_mask) != 0)
                     || (hash_move & 0xE000) != 0)
             {
                 let mut p = 0;
-                while self.move_lists[cur][p] != 0 {
-                    if (self.move_lists[cur][p] & 0xFFFF) == hash_move {
-                        self.move_lists[cur][p] |= 0x7FFF0000;
+                while self.move_lists[current][p] != 0 {
+                    if (self.move_lists[current][p] & 0xFFFF) == hash_move {
+                        self.move_lists[current][p] |= 0x7FFF0000;
                         break;
                     }
                     p += 1;
@@ -3243,38 +3442,38 @@ impl Engine {
         }
         let mut cnt = 0;
         loop {
-            let mv = self.pick_move();
-            if mv == 0 {
+            let chess_move = self.pick_move();
+            if chess_move == 0 {
                 break;
             }
-            if self.is_illegal(me, mv) {
+            if self.is_illegal(color, chess_move) {
                 continue;
             }
             cnt += 1;
-            if self.is_repetition(alpha + 1, mv) {
+            if self.is_repetition(alpha + 1, chess_move) {
                 score = score.max(0);
                 continue;
             }
-            if self.pos.board.square[move_to(mv)] == 0 && (mv & 0xE000) == 0 {
-                if cnt > 3 && !self.is_check(me, mv) && !pv {
+            if self.pos.board.squares[move_to(chess_move)] == 0 && (chess_move & 0xE000) == 0 {
+                if cnt > 3 && !self.is_check(color, chess_move) && !principal_variation {
                     continue;
                 }
-                let value = self.score() + self.delta_m(mv) + 10;
-                if value <= alpha && !pv {
+                let value = self.score() + self.delta_m(chess_move) + 10;
+                if value <= alpha && !principal_variation {
                     score = value.max(score);
                     continue;
                 }
             }
-            self.do_move(me, mv);
-            let value = -self.q_search(
-                opp(me),
-                pv,
+            self.make_move(color, chess_move);
+            let value = -self.quiescence_search(
+                opponent(color),
+                principal_variation,
                 -beta,
                 -alpha,
                 depth - 1 + pext,
                 FLAG_NEAT_SEARCH,
             );
-            self.undo_move(me, mv);
+            self.unmake_move(color, chess_move);
             if value > score {
                 score = value;
                 if value > alpha {
@@ -3296,11 +3495,18 @@ impl Engine {
 impl Engine {
     #[allow(clippy::too_many_lines)]
     #[allow(unused_assignments)]
-    pub fn search(&mut self, me: Color, exclusion: bool, beta: i32, depth: i32, flags: i32) -> i32 {
-        let height = self.pos.cur as i32;
+    pub fn search(
+        &mut self,
+        color: Color,
+        exclusion: bool,
+        beta: i32,
+        depth: i32,
+        flags: i32,
+    ) -> i32 {
+        let height = self.pos.current as i32;
         self.check_for_stop();
         if depth <= 1 {
-            return self.q_search(me, false, beta - 1, beta, 1, flags);
+            return self.quiescence_search(color, false, beta - 1, beta, 1, flags);
         }
         if (flags & FLAG_HALT_CHECK) != 0 {
             if height - MATE_VALUE >= beta {
@@ -3337,9 +3543,9 @@ impl Engine {
                 if (flags & FLAG_CALL_EVALUATION) != 0 {
                     self.evaluate();
                 }
-                if self.check(me) {
-                    return self.search_evasion(
-                        me,
+                if self.check(color) {
+                    return self.search_evasions(
+                        color,
                         false,
                         beta,
                         depth,
@@ -3348,9 +3554,11 @@ impl Engine {
                 }
                 let mut value = self.score() - 90 - (depth << 3) - (i32::max(depth - 5, 0) << 5);
                 if value >= beta
-                    && (self.pawn(opp(me)) & self.line(me, 1) & Self::shift(me, !self.piece_all()))
+                    && (self.pawn(opponent(color))
+                        & self.line(color, 1)
+                        & Self::shift(color, !self.piece_all()))
                         == 0
-                    && self.non_pawn_king(me) != 0
+                    && self.non_pawn_king(color) != 0
                     && (flags & (FLAG_RETURN_BEST_MOVE | FLAG_DISABLE_NULL)) == 0
                     && depth <= 13
                 {
@@ -3358,8 +3566,8 @@ impl Engine {
                 }
                 value = self.score() + 50;
                 if value < beta && depth <= 3 {
-                    let q = self.q_search(
-                        me,
+                    let q = self.quiescence_search(
+                        color,
                         false,
                         beta - 1,
                         beta,
@@ -3373,9 +3581,9 @@ impl Engine {
                 hash_value = -MATE_VALUE;
                 hash_depth = -1;
                 hash_move = flags & 0xFFFF;
-                self.pos.data[self.pos.cur].best = hash_move;
-                if let Some(idx) = self.probe_hash() {
-                    let e = self.hash.load(idx);
+                self.pos.states[self.pos.current].best_move = hash_move;
+                if let Some(idx) = self.probe_transposition_table() {
+                    let e = self.transposition_table.load(idx);
                     if (e.high_depth as i32) > high_depth {
                         high_depth = e.high_depth as i32;
                         high_value = e.high as i32;
@@ -3383,25 +3591,25 @@ impl Engine {
                     if (e.high as i32) < beta && (e.high_depth as i32) >= depth {
                         return e.high as i32;
                     }
-                    if e.mv != 0 && (e.low_depth as i32) > hash_depth {
-                        hash_move = e.mv as i32;
-                        self.pos.data[self.pos.cur].best = hash_move;
+                    if e.chess_move != 0 && (e.low_depth as i32) > hash_depth {
+                        hash_move = e.chess_move as i32;
+                        self.pos.states[self.pos.current].best_move = hash_move;
                         hash_depth = e.low_depth as i32;
                         if e.low_depth != 0 {
                             hash_value = e.low as i32;
                         }
                     }
                     if (e.low as i32) >= beta && (e.low_depth as i32) >= depth {
-                        if e.mv != 0 {
-                            let hm = e.mv as i32;
-                            self.pos.data[self.pos.cur].best = hm;
-                            if self.pos.board.square[move_to(hm)] == 0 && (hm & 0xE000) == 0 {
-                                if self.pos.data[self.pos.cur].killer[1] as i32 != hm
+                        if e.chess_move != 0 {
+                            let hm = e.chess_move as i32;
+                            self.pos.states[self.pos.current].best_move = hm;
+                            if self.pos.board.squares[move_to(hm)] == 0 && (hm & 0xE000) == 0 {
+                                if self.pos.states[self.pos.current].killer_moves[1] as i32 != hm
                                     && (flags & FLAG_NO_KILLER_UPDATE) == 0
                                 {
-                                    self.pos.data[self.pos.cur].killer[2] =
-                                        self.pos.data[self.pos.cur].killer[1];
-                                    self.pos.data[self.pos.cur].killer[1] = hm as u16;
+                                    self.pos.states[self.pos.current].killer_moves[2] =
+                                        self.pos.states[self.pos.current].killer_moves[1];
+                                    self.pos.states[self.pos.current].killer_moves[1] = hm as u16;
                                 }
                                 self.update_ref(hm);
                             }
@@ -3415,30 +3623,30 @@ impl Engine {
                 if hash_depth < 0 && depth >= self.settings.syzygy_probe_depth as i32 {
                     if let Some(value) = self.probe_tb_wdl() {
                         let tb_depth = (depth + 6).min(127);
-                        self.hash_high(value, tb_depth);
-                        self.hash_low(0, value, tb_depth);
+                        self.store_upper_bound(value, tb_depth);
+                        self.store_lower_bound(0, value, tb_depth);
                         return value;
                     }
                 }
                 if depth >= 20 {
-                    if let Some(idx) = self.probe_pv_hash() {
-                        let e = self.pv_hash.load(idx);
-                        self.hash_low(e.mv as i32, e.value as i32, e.depth as i32);
-                        self.hash_high(e.value as i32, e.depth as i32);
+                    if let Some(idx) = self.probe_principal_variation_table() {
+                        let e = self.principal_variation_table.load(idx);
+                        self.store_lower_bound(e.chess_move as i32, e.value as i32, e.depth as i32);
+                        self.store_upper_bound(e.value as i32, e.depth as i32);
                         if (e.depth as i32) >= depth {
-                            if e.mv != 0 {
-                                self.pos.data[self.pos.cur].best = e.mv as i32;
+                            if e.chess_move != 0 {
+                                self.pos.states[self.pos.current].best_move = e.chess_move as i32;
                             }
-                            let ply = self.pos.data[self.pos.cur].ply as i32;
+                            let ply = self.pos.states[self.pos.current].ply as i32;
                             if (flags & FLAG_RETURN_BEST_MOVE) == 0
                                 && ((ply <= 50 && e.ply <= 50) || (ply >= 50 && e.ply >= 50))
                             {
                                 return e.value as i32;
                             }
                         }
-                        if e.mv != 0 && (e.depth as i32) > hash_depth {
-                            hash_move = e.mv as i32;
-                            self.pos.data[self.pos.cur].best = hash_move;
+                        if e.chess_move != 0 && (e.depth as i32) > hash_depth {
+                            hash_move = e.chess_move as i32;
+                            self.pos.states[self.pos.current].best_move = hash_move;
                             hash_depth = e.depth as i32;
                             hash_value = e.value as i32;
                         }
@@ -3456,7 +3664,7 @@ impl Engine {
                 {
                     new_depth = depth - 8;
                     let value = self.search(
-                        me,
+                        color,
                         false,
                         beta,
                         new_depth,
@@ -3467,8 +3675,8 @@ impl Engine {
                             | hash_move,
                     );
                     if value >= beta {
-                        if self.pos.data[self.pos.cur].best != 0 {
-                            hash_move = self.pos.data[self.pos.cur].best;
+                        if self.pos.states[self.pos.current].best_move != 0 {
+                            hash_move = self.pos.states[self.pos.current].best_move;
                         }
                         hash_depth = new_depth;
                         hash_value = beta;
@@ -3480,15 +3688,16 @@ impl Engine {
                     && (high_value >= beta || high_depth < depth - 10)
                     && (depth < 12 || (hash_value >= beta && hash_depth >= depth - 12))
                     && beta > -EVAL_VALUE
-                    && self.non_pawn_king(me) != 0
+                    && self.non_pawn_king(color) != 0
                 {
                     new_depth = depth - 8;
-                    self.do_null();
-                    let value = -self.search(opp(me), false, 1 - beta, new_depth, FLAG_HASH_CHECK);
-                    self.undo_null();
+                    self.make_null_move();
+                    let value =
+                        -self.search(opponent(color), false, 1 - beta, new_depth, FLAG_HASH_CHECK);
+                    self.unmake_null_move();
                     if value >= beta {
                         if depth < 12 {
-                            self.hash_low(0, value, depth);
+                            self.store_lower_bound(0, value, depth);
                         }
                         return value;
                     }
@@ -3497,12 +3706,12 @@ impl Engine {
                 cnt = 0;
                 flag = 0;
                 singular = 0;
-                if hash_move != 0 && self.is_legal(me, hash_move) {
-                    if self.is_illegal(me, hash_move) {
+                if hash_move != 0 && self.is_legal(color, hash_move) {
+                    if self.is_illegal(color, hash_move) {
                         // skip
                     } else {
                         cnt += 1;
-                        let check = self.is_check(me, hash_move);
+                        let check = self.is_check(color, hash_move);
                         let mut ext = if check {
                             1 + i32::from(depth < 16)
                         } else {
@@ -3514,7 +3723,7 @@ impl Engine {
                             let margin_two = beta - EXCL_DOUBLE;
                             let prev_ext = Self::ext(flags);
                             singular = self.singular_extension(
-                                me, ext, prev_ext, margin_one, margin_two, new_depth, hash_move,
+                                color, ext, prev_ext, margin_one, margin_two, new_depth, hash_move,
                             );
                             if singular != 0 {
                                 ext = ext.max(
@@ -3523,21 +3732,21 @@ impl Engine {
                                 );
                             }
                         }
-                        let prev_mv = self.pos.data[self.pos.cur].mv as i32;
+                        let prev_mv = self.pos.states[self.pos.current].chess_move as i32;
                         if depth < 16
                             && move_to(hash_move) == move_to(prev_mv)
-                            && self.pos.board.square[move_to(hash_move)] != 0
+                            && self.pos.board.squares[move_to(hash_move)] != 0
                         {
                             ext = ext.max(2);
                         }
                         new_depth = depth - 2 + ext;
-                        self.do_move(me, hash_move);
+                        self.make_move(color, hash_move);
                         let mut f = FLAG_NEAT_SEARCH | Self::ext_flag(ext);
                         if hash_value >= beta && hash_depth >= depth - 12 {
                             f |= FLAG_DISABLE_NULL;
                         }
-                        let value = -self.search(opp(me), false, 1 - beta, new_depth, f);
-                        self.undo_move(me, hash_move);
+                        let value = -self.search(opponent(color), false, 1 - beta, new_depth, f);
+                        self.unmake_move(color, hash_move);
                         if value > score {
                             score = value;
                             if value >= beta {
@@ -3550,21 +3759,23 @@ impl Engine {
             }
 
             // skip_hash_move:
-            self.pos.data[self.pos.cur].killer[0] = 0;
-            self.pos.data[self.pos.cur].stage = STAGE_SEARCH;
-            self.pos.data[self.pos.cur].gen_flags = 0;
-            let pmv = self.pos.data[self.pos.cur].mv as i32;
+            self.pos.states[self.pos.current].killer_moves[0] = 0;
+            self.pos.states[self.pos.current].stage = STAGE_SEARCH;
+            self.pos.states[self.pos.current].generation_flags = 0;
+            let pmv = self.pos.states[self.pos.current].chess_move as i32;
             if pmv != 0 {
                 let ri = self.ref_index(pmv);
-                self.pos.data[self.pos.cur].refs[0] = self.reference[ri].refs[0];
-                self.pos.data[self.pos.cur].refs[1] = self.reference[ri].refs[1];
+                self.pos.states[self.pos.current].refutation_moves[0] =
+                    self.reference[ri].refutation_moves[0];
+                self.pos.states[self.pos.current].refutation_moves[1] =
+                    self.reference[ri].refutation_moves[1];
             }
             let mut move_back = 0i32;
-            if beta > 0 && self.pos.data[self.pos.cur].ply >= 2 && self.pos.cur > 0 {
-                let pm = self.pos.data[self.pos.cur - 1].mv as i32;
+            if beta > 0 && self.pos.states[self.pos.current].ply >= 2 && self.pos.current > 0 {
+                let pm = self.pos.states[self.pos.current - 1].chess_move as i32;
                 if (pm & 0xF000) == 0 {
                     move_back = (move_to(pm) as i32) << 6 | move_from(pm) as i32;
-                    if self.pos.board.square[move_to(move_back)] != 0 {
+                    if self.pos.board.squares[move_to(move_back)] != 0 {
                         move_back = 0;
                     }
                 }
@@ -3574,66 +3785,72 @@ impl Engine {
             if margin < beta && depth <= 19 {
                 flag = 1;
                 score = score.max(margin);
-                self.pos.data[self.pos.cur].stage = STAGE_RAZORING;
-                self.pos.data[self.pos.cur].mask = self.piece(opp(me));
+                self.pos.states[self.pos.current].stage = STAGE_RAZORING;
+                self.pos.states[self.pos.current].move_mask = self.piece(opponent(color));
                 let value = self.score() + 200 + (depth << 5);
                 if value < beta {
                     score = score.max(value);
-                    self.pos.data[self.pos.cur].mask ^= self.pawn(opp(me));
+                    self.pos.states[self.pos.current].move_mask ^= self.pawn(opponent(color));
                 }
             }
-            self.pos.data[self.pos.cur].current = 0;
-            self.move_lists[self.pos.cur][0] = 0;
+            self.pos.states[self.pos.current].current = 0;
+            self.move_lists[self.pos.current][0] = 0;
             if depth <= 5 {
-                self.pos.data[self.pos.cur].gen_flags |= FLAG_NO_BC_SORT;
+                self.pos.states[self.pos.current].generation_flags |= FLAG_NO_BAD_CAPTURE_SORT;
             }
 
             loop {
-                let mv = self.get_move(me, false);
-                if mv == 0 {
+                let chess_move = self.get_move(color, false);
+                if chess_move == 0 {
                     break;
                 }
-                if mv == hash_move {
+                if chess_move == hash_move {
                     continue;
                 }
-                if self.is_illegal(me, mv) {
+                if self.is_illegal(color, chess_move) {
                     continue;
                 }
                 cnt += 1;
-                if mv == move_back {
+                if chess_move == move_back {
                     score = score.max(0);
                     continue;
                 }
-                let st = self.pos.data[self.pos.cur];
-                let check = if st.stage == R_CHECKS {
+                let state = self.pos.states[self.pos.current];
+                let check = if state.stage == ROOT_CHECKS {
                     true
                 } else {
-                    self.is_check(me, mv)
+                    self.is_check(color, chess_move)
                 };
-                let ext = if check && self.see(me, mv, 0) {
+                let ext = if check && self.static_exchange_evaluation(color, chess_move, 0) {
                     1 + i32::from(depth < 16)
                 } else {
-                    self.extension(false, mv, depth)
+                    self.extension(false, chess_move, depth)
                 };
                 new_depth = depth - 2 + ext;
-                if self.pos.board.square[move_to(mv)] == 0 && (mv & 0xE000) == 0 {
-                    if mv != st.killer[1] as i32 && mv != st.killer[2] as i32 {
+                if self.pos.board.squares[move_to(chess_move)] == 0 && (chess_move & 0xE000) == 0 {
+                    if chess_move != state.killer_moves[1] as i32
+                        && chess_move != state.killer_moves[2] as i32
+                    {
                         if !check && cnt > moves_to_play {
-                            self.pos.data[self.pos.cur].gen_flags &= !FLAG_SORT;
+                            self.pos.states[self.pos.current].generation_flags &= !FLAG_SORT;
                             continue;
                         }
                         if depth >= 6 {
-                            let mut reduction = msb(cnt as u64) as i32;
-                            if mv == st.refs[0] as i32 || mv == st.refs[1] as i32 {
+                            let mut reduction = most_significant_bit(cnt as u64) as i32;
+                            if chess_move == state.refutation_moves[0] as i32
+                                || chess_move == state.refutation_moves[1] as i32
+                            {
                                 reduction = i32::max(0, reduction - 1);
                             }
                             if reduction >= 2
                                 && (self.queen(WHITE) | self.queen(BLACK)) == 0
-                                && popcount(self.non_pawn_king_all()) <= 4
+                                && population_count(self.non_pawn_king_all()) <= 4
                             {
                                 reduction += reduction / 2;
                             }
-                            if new_depth - reduction > 3 && !self.see(me, mv, -50) {
+                            if new_depth - reduction > 3
+                                && !self.static_exchange_evaluation(color, chess_move, -50)
+                            {
                                 reduction += 2;
                             }
                             if reduction != 0 && reduction < 2 && new_depth - reduction > 3 {
@@ -3647,32 +3864,42 @@ impl Engine {
                         }
                     }
                     if !check {
-                        let value = self.score() + self.delta_m(mv) + 10;
+                        let value = self.score() + self.delta_m(chess_move) + 10;
                         if value < beta && depth <= 3 {
                             score = score.max(value);
                             continue;
                         }
                         if cnt > 7 {
-                            let value = margin + self.delta_m(mv) - 25 * msb(cnt as u64) as i32;
+                            let value = margin + self.delta_m(chess_move)
+                                - 25 * most_significant_bit(cnt as u64) as i32;
                             if value < beta && depth <= 19 {
                                 score = score.max(value);
                                 continue;
                             }
                         }
                     }
-                    if depth <= 9 && self.non_pawn_king(me) != 0 && !self.see(me, mv, -50) {
+                    if depth <= 9
+                        && self.non_pawn_king(color) != 0
+                        && !self.static_exchange_evaluation(color, chess_move, -50)
+                    {
                         continue;
                     }
-                } else if self.pos.data[self.pos.cur].stage == R_CAP {
-                    if !check && depth <= 9 && !self.see(me, mv, -50) {
+                } else if self.pos.states[self.pos.current].stage == ROOT_CAPTURES {
+                    if !check
+                        && depth <= 9
+                        && !self.static_exchange_evaluation(color, chess_move, -50)
+                    {
                         continue;
                     }
-                } else if self.pos.data[self.pos.cur].stage == S_BAD_CAP && !check && depth <= 5 {
+                } else if self.pos.states[self.pos.current].stage == STAGE_BAD_CAPTURES
+                    && !check
+                    && depth <= 5
+                {
                     continue;
                 }
-                self.do_move(me, mv);
+                self.make_move(color, chess_move);
                 let value = -self.search(
-                    opp(me),
+                    opponent(color),
                     false,
                     1 - beta,
                     new_depth,
@@ -3680,7 +3907,7 @@ impl Engine {
                 );
                 let value = if value >= beta && new_depth < depth - 2 + ext {
                     -self.search(
-                        opp(me),
+                        opponent(color),
                         false,
                         1 - beta,
                         depth - 2 + ext,
@@ -3689,11 +3916,11 @@ impl Engine {
                 } else {
                     value
                 };
-                self.undo_move(me, mv);
+                self.unmake_move(color, chess_move);
                 if value > score {
                     score = value;
                     if value >= beta {
-                        cut_move = mv;
+                        cut_move = chess_move;
                         break 'search;
                     }
                 }
@@ -3704,25 +3931,26 @@ impl Engine {
             if exclusion {
                 return score;
             }
-            self.pos.data[self.pos.cur].best = cut_move;
+            self.pos.states[self.pos.current].best_move = cut_move;
             if depth >= 10 {
                 score = i32::min(beta, score);
             }
-            self.hash_low(cut_move, score, depth);
-            if self.pos.board.square[move_to(cut_move)] == 0 && (cut_move & 0xE000) == 0 {
-                if self.pos.data[self.pos.cur].killer[1] as i32 != cut_move
+            self.store_lower_bound(cut_move, score, depth);
+            if self.pos.board.squares[move_to(cut_move)] == 0 && (cut_move & 0xE000) == 0 {
+                if self.pos.states[self.pos.current].killer_moves[1] as i32 != cut_move
                     && (flags & FLAG_NO_KILLER_UPDATE) == 0
                 {
-                    self.pos.data[self.pos.cur].killer[2] = self.pos.data[self.pos.cur].killer[1];
-                    self.pos.data[self.pos.cur].killer[1] = cut_move as u16;
+                    self.pos.states[self.pos.current].killer_moves[2] =
+                        self.pos.states[self.pos.current].killer_moves[1];
+                    self.pos.states[self.pos.current].killer_moves[1] = cut_move as u16;
                 }
                 self.history_good(cut_move, depth);
-                if cut_move != hash_move && self.pos.data[self.pos.cur].stage == S_QUIET {
-                    let start = self.pos.data[self.pos.cur].start;
-                    let end = self.pos.data[self.pos.cur].current.saturating_sub(1);
+                if cut_move != hash_move && self.pos.states[self.pos.current].stage == STAGE_QUIET {
+                    let start = self.pos.states[self.pos.current].start_index;
+                    let end = self.pos.states[self.pos.current].current.saturating_sub(1);
                     for p in start..end {
-                        let mv = self.move_lists[self.pos.cur][p];
-                        self.history_bad(mv, depth);
+                        let chess_move = self.move_lists[self.pos.current][p];
+                        self.history_bad(chess_move, depth);
                     }
                 }
                 self.update_ref(cut_move);
@@ -3731,12 +3959,12 @@ impl Engine {
         }
 
         if cnt == 0 && flag == 0 {
-            self.hash_high(0, 127);
-            self.hash_low(0, 0, 127);
+            self.store_upper_bound(0, 127);
+            self.store_lower_bound(0, 0, 127);
             return 0;
         }
         if !exclusion {
-            self.hash_high(score, depth);
+            self.store_upper_bound(score, depth);
         }
         score
     }
@@ -3745,17 +3973,17 @@ impl Engine {
 impl Engine {
     #[allow(clippy::too_many_lines)]
     #[allow(unused_assignments)]
-    pub fn search_evasion(
+    pub fn search_evasions(
         &mut self,
-        me: Color,
+        color: Color,
         exclusion: bool,
         beta: i32,
         depth: i32,
         flags: i32,
     ) -> i32 {
-        let height = self.pos.cur as i32;
+        let height = self.pos.current as i32;
         if depth <= 1 {
-            return self.q_evasion(me, false, beta - 1, beta, 1, flags);
+            return self.quiescence_search_evasions(color, false, beta - 1, beta, 1, flags);
         }
         let mut score = height - MATE_VALUE;
         if (flags & FLAG_HALT_CHECK) != 0 {
@@ -3780,27 +4008,27 @@ impl Engine {
             cnt = 0;
             pext = 0;
             score = beta - 1;
-            self.gen_evasions(me);
-            if self.move_lists[self.pos.cur][0] == 0 {
+            self.generate_evasions(color);
+            if self.move_lists[self.pos.current][0] == 0 {
                 return score;
             }
         } else {
-            self.pos.data[self.pos.cur].best = hash_move;
-            if let Some(idx) = self.probe_hash() {
-                let e = self.hash.load(idx);
+            self.pos.states[self.pos.current].best_move = hash_move;
+            if let Some(idx) = self.probe_transposition_table() {
+                let e = self.transposition_table.load(idx);
                 if (e.high as i32) < beta && (e.high_depth as i32) >= depth {
                     return e.high as i32;
                 }
-                if e.mv != 0 && (e.low_depth as i32) > hash_depth {
-                    hash_move = e.mv as i32;
-                    self.pos.data[self.pos.cur].best = hash_move;
+                if e.chess_move != 0 && (e.low_depth as i32) > hash_depth {
+                    hash_move = e.chess_move as i32;
+                    self.pos.states[self.pos.current].best_move = hash_move;
                     hash_depth = e.low_depth as i32;
                 }
                 if (e.low as i32) >= beta && (e.low_depth as i32) >= depth {
-                    if e.mv != 0 {
-                        let hm = e.mv as i32;
-                        self.pos.data[self.pos.cur].best = hm;
-                        if self.pos.board.square[move_to(hm)] == 0 && (hm & 0xE000) == 0 {
+                    if e.chess_move != 0 {
+                        let hm = e.chess_move as i32;
+                        self.pos.states[self.pos.current].best_move = hm;
+                        if self.pos.board.squares[move_to(hm)] == 0 && (hm & 0xE000) == 0 {
                             self.update_check_ref(hm);
                         }
                     }
@@ -3811,19 +4039,19 @@ impl Engine {
                 }
             }
             if depth >= 20 {
-                if let Some(idx) = self.probe_pv_hash() {
-                    let e = self.pv_hash.load(idx);
-                    self.hash_low(e.mv as i32, e.value as i32, e.depth as i32);
-                    self.hash_high(e.value as i32, e.depth as i32);
+                if let Some(idx) = self.probe_principal_variation_table() {
+                    let e = self.principal_variation_table.load(idx);
+                    self.store_lower_bound(e.chess_move as i32, e.value as i32, e.depth as i32);
+                    self.store_upper_bound(e.value as i32, e.depth as i32);
                     if (e.depth as i32) >= depth {
-                        if e.mv != 0 {
-                            self.pos.data[self.pos.cur].best = e.mv as i32;
+                        if e.chess_move != 0 {
+                            self.pos.states[self.pos.current].best_move = e.chess_move as i32;
                         }
                         return e.value as i32;
                     }
-                    if e.mv != 0 && (e.depth as i32) > hash_depth {
-                        hash_move = e.mv as i32;
-                        self.pos.data[self.pos.cur].best = hash_move;
+                    if e.chess_move != 0 && (e.depth as i32) > hash_depth {
+                        hash_move = e.chess_move as i32;
+                        self.pos.states[self.pos.current].best_move = hash_move;
                         hash_depth = e.depth as i32;
                         hash_value = e.value as i32;
                     }
@@ -3832,8 +4060,8 @@ impl Engine {
             if hash_depth < 0 && depth >= self.settings.syzygy_probe_depth as i32 {
                 if let Some(value) = self.probe_tb_wdl() {
                     let tb_depth = (depth + 6).min(127);
-                    self.hash_high(value, tb_depth);
-                    self.hash_low(0, value, tb_depth);
+                    self.store_upper_bound(value, tb_depth);
+                    self.store_lower_bound(0, value, tb_depth);
                     return value;
                 }
             }
@@ -3843,27 +4071,27 @@ impl Engine {
             if (flags & FLAG_CALL_EVALUATION) != 0 {
                 self.evaluate();
             }
-            self.pos.data[self.pos.cur].mask = !0u64;
+            self.pos.states[self.pos.current].move_mask = !0u64;
             if self.score() - 10 < beta && depth <= 3 {
-                self.pos.data[self.pos.cur].mask = self.piece(opp(me));
+                self.pos.states[self.pos.current].move_mask = self.piece(opponent(color));
                 score = self.score() - 10;
-                self.capture_margin(me, beta, &mut score);
+                self.capture_margin(color, beta, &mut score);
             }
             cnt = 0;
             pext = 0;
-            self.gen_evasions(me);
-            if self.move_lists[self.pos.cur][0] == 0 {
+            self.generate_evasions(color);
+            if self.move_lists[self.pos.current][0] == 0 {
                 return score;
             }
-            if self.move_lists[self.pos.cur][1] == 0 {
+            if self.move_lists[self.pos.current][1] == 0 {
                 pext = 2;
             }
-            if hash_move != 0 && self.is_legal(me, hash_move) {
-                if self.is_illegal(me, hash_move) {
+            if hash_move != 0 && self.is_legal(color, hash_move) {
+                if self.is_illegal(color, hash_move) {
                     // skip
                 } else {
                     cnt += 1;
-                    let check = self.is_check(me, hash_move);
+                    let check = self.is_check(color, hash_move);
                     let mut ext = if check {
                         i32::max(pext, 1 + i32::from(depth < 16))
                     } else {
@@ -3875,7 +4103,7 @@ impl Engine {
                         let margin_two = beta - EXCL_DOUBLE;
                         let prev_ext = Self::ext(flags);
                         let singular = self.singular_extension(
-                            me, ext, prev_ext, margin_one, margin_two, excl_depth, hash_move,
+                            color, ext, prev_ext, margin_one, margin_two, excl_depth, hash_move,
                         );
                         if singular != 0 {
                             ext = i32::max(
@@ -3886,10 +4114,13 @@ impl Engine {
                         }
                     }
                     let new_depth = depth - 2 + ext;
-                    self.do_move(me, hash_move);
+                    self.make_move(color, hash_move);
                     self.evaluate();
-                    if (self.pos.data[self.pos.cur].att[opp(me)] & self.king(me)) != 0 {
-                        self.undo_move(me, hash_move);
+                    if (self.pos.states[self.pos.current].attacks[opponent(color)]
+                        & self.king(color))
+                        != 0
+                    {
+                        self.unmake_move(color, hash_move);
                         cnt -= 1;
                         // skip hash move
                     } else {
@@ -3897,8 +4128,8 @@ impl Engine {
                         if hash_value >= beta && hash_depth >= depth - 12 {
                             f |= FLAG_DISABLE_NULL;
                         }
-                        let value = -self.search(opp(me), false, 1 - beta, new_depth, f);
-                        self.undo_move(me, hash_move);
+                        let value = -self.search(opponent(color), false, 1 - beta, new_depth, f);
+                        self.unmake_move(color, hash_move);
                         if value > score {
                             score = value;
                             if value >= beta {
@@ -3915,62 +4146,64 @@ impl Engine {
                 break 'gen;
             }
             let moves_to_play = 3 + (depth * depth) / 6;
-            let pmv = self.pos.data[self.pos.cur].mv as i32;
+            let pmv = self.pos.states[self.pos.current].chess_move as i32;
             if pmv != 0 {
                 let ri = self.ref_index(pmv);
-                self.pos.data[self.pos.cur].refs[0] = self.reference[ri].check_refs[0];
-                self.pos.data[self.pos.cur].refs[1] = self.reference[ri].check_refs[1];
+                self.pos.states[self.pos.current].refutation_moves[0] =
+                    self.reference[ri].check_refs[0];
+                self.pos.states[self.pos.current].refutation_moves[1] =
+                    self.reference[ri].check_refs[1];
             }
             self.mark_evasions();
-            self.pos.data[self.pos.cur].current = 0;
+            self.pos.states[self.pos.current].current = 0;
             loop {
-                let mv = self.pick_move();
-                if mv == 0 {
+                let chess_move = self.pick_move();
+                if chess_move == 0 {
                     break;
                 }
-                if mv == hash_move {
+                if chess_move == hash_move {
                     continue;
                 }
-                if self.is_illegal(me, mv) {
+                if self.is_illegal(color, chess_move) {
                     continue;
                 }
                 cnt += 1;
-                if self.is_repetition(beta, mv) {
+                if self.is_repetition(beta, chess_move) {
                     score = score.max(0);
                     continue;
                 }
-                let check = self.is_check(me, mv);
+                let check = self.is_check(color, chess_move);
                 let ext = if check {
                     i32::max(pext, 1 + i32::from(depth < 16))
                 } else {
-                    i32::max(pext, self.extension(false, mv, depth))
+                    i32::max(pext, self.extension(false, chess_move, depth))
                 };
                 let mut new_depth = depth - 2 + ext;
-                if self.pos.board.square[move_to(mv)] == 0 && (mv & 0xE000) == 0 {
+                if self.pos.board.squares[move_to(chess_move)] == 0 && (chess_move & 0xE000) == 0 {
                     if !check {
                         if cnt > moves_to_play {
                             continue;
                         }
-                        let value = self.score() + self.delta_m(mv) + 10;
+                        let value = self.score() + self.delta_m(chess_move) + 10;
                         if value < beta && depth <= 3 {
                             score = score.max(value);
                             continue;
                         }
                     }
                     if depth >= 6 && cnt > 3 {
-                        let mut reduction = msb(cnt as u64) as i32;
+                        let mut reduction = most_significant_bit(cnt as u64) as i32;
                         if reduction >= 2
                             && (self.queen(WHITE) | self.queen(BLACK)) == 0
-                            && popcount(self.non_pawn_king_all()) <= 4
+                            && population_count(self.non_pawn_king_all()) <= 4
                         {
                             reduction += reduction / 2;
                         }
                         new_depth = i32::max(3, new_depth - reduction);
                     }
                 }
-                self.do_move(me, mv);
+                self.make_move(color, chess_move);
                 let value = -self.search(
-                    opp(me),
+                    opponent(color),
                     false,
                     1 - beta,
                     new_depth,
@@ -3978,7 +4211,7 @@ impl Engine {
                 );
                 let value = if value >= beta && new_depth < depth - 2 + ext {
                     -self.search(
-                        opp(me),
+                        opponent(color),
                         false,
                         1 - beta,
                         depth - 2 + ext,
@@ -3987,11 +4220,11 @@ impl Engine {
                 } else {
                     value
                 };
-                self.undo_move(me, mv);
+                self.unmake_move(color, chess_move);
                 if value > score {
                     score = value;
                     if value >= beta {
-                        cut_move = mv;
+                        cut_move = chess_move;
                         break 'gen;
                     }
                 }
@@ -4002,15 +4235,15 @@ impl Engine {
             if exclusion {
                 return score;
             }
-            self.pos.data[self.pos.cur].best = cut_move;
-            self.hash_low(cut_move, score, depth);
-            if self.pos.board.square[move_to(cut_move)] == 0 && (cut_move & 0xE000) == 0 {
+            self.pos.states[self.pos.current].best_move = cut_move;
+            self.store_lower_bound(cut_move, score, depth);
+            if self.pos.board.squares[move_to(cut_move)] == 0 && (cut_move & 0xE000) == 0 {
                 self.update_check_ref(cut_move);
             }
             return score;
         }
         if !exclusion {
-            self.hash_high(score, depth);
+            self.store_upper_bound(score, depth);
         }
         score
     }
@@ -4025,16 +4258,16 @@ impl Engine {}
 impl Engine {
     #[allow(clippy::too_many_lines)]
     #[allow(unused_assignments)]
-    pub fn pv_search(
+    pub fn principal_variation_search(
         &mut self,
-        me: Color,
+        color: Color,
         root: bool,
         mut alpha: i32,
         beta: i32,
         mut depth: i32,
         mut flags: i32,
     ) -> i32 {
-        let height = self.pos.cur as i32;
+        let height = self.pos.current as i32;
         let mut pext = 0i32;
         let mut ext;
         let mut hash_value = -MATE_VALUE;
@@ -4067,7 +4300,7 @@ impl Engine {
             self.root_list[0] = set_score(self.root_list[0], 2);
         } else {
             if depth <= 1 {
-                return self.q_search(me, true, alpha, beta, 1, FLAG_NEAT_SEARCH);
+                return self.quiescence_search(color, true, alpha, beta, 1, FLAG_NEAT_SEARCH);
             }
             if height - MATE_VALUE >= beta {
                 return beta;
@@ -4083,34 +4316,34 @@ impl Engine {
         // check_hash:
         hash_depth = -1;
         hash_move = 0;
-        self.pos.data[self.pos.cur].best = 0;
-        if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash.load(idx);
-            self.hash_low(e.mv as i32, e.value as i32, e.depth as i32);
-            self.hash_high(e.value as i32, e.depth as i32);
-            if (e.depth as i32) >= depth && self.pv_hashing != 0 {
-                if e.mv != 0 {
-                    self.pos.data[self.pos.cur].best = e.mv as i32;
+        self.pos.states[self.pos.current].best_move = 0;
+        if let Some(idx) = self.probe_principal_variation_table() {
+            let e = self.principal_variation_table.load(idx);
+            self.store_lower_bound(e.chess_move as i32, e.value as i32, e.depth as i32);
+            self.store_upper_bound(e.value as i32, e.depth as i32);
+            if (e.depth as i32) >= depth && self.principal_variation_hashing != 0 {
+                if e.chess_move != 0 {
+                    self.pos.states[self.pos.current].best_move = e.chess_move as i32;
                 }
-                let ply = self.pos.data[self.pos.cur].ply as i32;
+                let ply = self.pos.states[self.pos.current].ply as i32;
                 if (ply <= 50 && e.ply <= 50) || (ply >= 50 && e.ply >= 50) {
-                    if e.value == 0 || !self.draw_in_pv(me) {
+                    if e.value == 0 || !self.draw_in_principal_variation(color) {
                         return e.value as i32;
                     }
                 }
             }
-            if e.mv != 0 && (e.depth as i32) > hash_depth {
-                hash_move = e.mv as i32;
-                self.pos.data[self.pos.cur].best = hash_move;
+            if e.chess_move != 0 && (e.depth as i32) > hash_depth {
+                hash_move = e.chess_move as i32;
+                self.pos.states[self.pos.current].best_move = hash_move;
                 hash_depth = e.depth as i32;
                 hash_value = e.value as i32;
             }
         }
-        if let Some(idx) = self.probe_hash() {
-            let e = self.hash.load(idx);
-            if e.mv != 0 && (e.low_depth as i32) > hash_depth {
-                hash_move = e.mv as i32;
-                self.pos.data[self.pos.cur].best = hash_move;
+        if let Some(idx) = self.probe_transposition_table() {
+            let e = self.transposition_table.load(idx);
+            if e.chess_move != 0 && (e.low_depth as i32) > hash_depth {
+                hash_move = e.chess_move as i32;
+                self.pos.states[self.pos.current].best_move = hash_move;
                 hash_depth = e.low_depth as i32;
                 if e.low_depth != 0 {
                     hash_value = e.low as i32;
@@ -4120,8 +4353,8 @@ impl Engine {
         if hash_depth < 0 && depth >= self.settings.syzygy_probe_depth as i32 {
             if let Some(value) = self.probe_tb_wdl() {
                 let tb_depth = (depth + 6).min(127);
-                self.hash_high(value, tb_depth);
-                self.hash_low(0, value, tb_depth);
+                self.store_upper_bound(value, tb_depth);
+                self.store_lower_bound(0, value, tb_depth);
                 return value;
             }
         }
@@ -4143,10 +4376,11 @@ impl Engine {
             } else {
                 new_depth = depth - 4;
             }
-            value = self.pv_search(me, false, alpha, beta, new_depth, hash_move);
+            value =
+                self.principal_variation_search(color, false, alpha, beta, new_depth, hash_move);
             if value > alpha {
-                if self.pos.data[self.pos.cur].best != 0 {
-                    hash_move = self.pos.data[self.pos.cur].best;
+                if self.pos.states[self.pos.current].best_move != 0 {
+                    hash_move = self.pos.states[self.pos.current].best_move;
                 }
                 hash_depth = new_depth;
                 hash_value = value;
@@ -4163,7 +4397,7 @@ impl Engine {
                         break;
                     }
                     value = self.search(
-                        me,
+                        color,
                         false,
                         margin,
                         new_depth,
@@ -4174,8 +4408,8 @@ impl Engine {
                             | hash_move,
                     );
                     if value >= margin {
-                        if self.pos.data[self.pos.cur].best != 0 {
-                            hash_move = self.pos.data[self.pos.cur].best;
+                        if self.pos.states[self.pos.current].best_move != 0 {
+                            hash_move = self.pos.states[self.pos.current].best_move;
                         }
                         hash_depth = new_depth;
                         hash_value = value;
@@ -4192,28 +4426,28 @@ impl Engine {
         }
         // skip_iid:
 
-        if !root && self.check(me) {
+        if !root && self.check(color) {
             alpha = i32::max(height - MATE_VALUE, alpha);
-            self.pos.data[self.pos.cur].mask = !0u64;
-            self.gen_evasions(me);
-            if self.move_lists[self.pos.cur][0] == 0 {
+            self.pos.states[self.pos.current].move_mask = !0u64;
+            self.generate_evasions(color);
+            if self.move_lists[self.pos.current][0] == 0 {
                 return height - MATE_VALUE;
             }
-            if self.move_lists[self.pos.cur][1] == 0 {
+            if self.move_lists[self.pos.current][1] == 0 {
                 pext = 2;
             }
         }
 
-        'pv: {
-            if hash_move != 0 && self.is_legal(me, hash_move) {
+        'principal_variation: {
+            if hash_move != 0 && self.is_legal(color, hash_move) {
                 cnt += 1;
                 if root {
-                    for s in self.pos.data.iter_mut().skip(1).take(127) {
+                    for s in self.pos.states.iter_mut().skip(1).take(127) {
                         *s = State::default();
                     }
-                    self.send_curr_move(hash_move, cnt);
+                    self.send_current_move(hash_move, cnt);
                 }
-                let check = self.is_check(me, hash_move);
+                let check = self.is_check(color, hash_move);
                 ext = if check {
                     2
                 } else {
@@ -4225,7 +4459,7 @@ impl Engine {
                     let margin_two = hash_value - EXCL_DOUBLE_PV;
                     let prev_ext = Self::ext(flags);
                     singular = self.singular_extension(
-                        me,
+                        color,
                         if root { 0 } else { ext },
                         if root { 0 } else { prev_ext },
                         margin_one,
@@ -4240,7 +4474,7 @@ impl Engine {
                                 - i32::from(singular >= 2 && prev_ext >= 2),
                         );
                         if root {
-                            self.si.singular = singular;
+                            self.search_info.singular = singular;
                         }
                         ex_depth = new_depth;
                         ex_value = (if singular >= 2 {
@@ -4251,122 +4485,129 @@ impl Engine {
                     }
                 }
                 new_depth = depth - 2 + ext;
-                self.do_move(me, hash_move);
-                let value = -self.pv_search(
-                    opp(me),
+                self.make_move(color, hash_move);
+                let value = -self.principal_variation_search(
+                    opponent(color),
                     false,
                     -beta,
                     -alpha,
                     new_depth,
                     Self::ext_flag(ext),
                 );
-                self.undo_move(me, hash_move);
+                self.unmake_move(color, hash_move);
                 if value > alpha {
                     if root {
-                        self.si.fail_low = 0;
+                        self.search_info.fail_low = 0;
                         self.stats.best_move = hash_move;
                         self.stats.best_score = value;
-                        self.hash_low(hash_move, value, depth);
+                        self.store_lower_bound(hash_move, value, depth);
                         if depth >= 14 {
-                            self.send_pv(depth / 2, old_alpha, beta, value);
+                            self.send_principal_variation(depth / 2, old_alpha, beta, value);
                         }
                     }
                     alpha = value;
-                    self.pos.data[self.pos.cur].best = hash_move;
+                    self.pos.states[self.pos.current].best_move = hash_move;
                     if value >= beta {
                         cut_move = hash_move;
-                        break 'pv;
+                        break 'principal_variation;
                     }
                 } else if root {
-                    self.si.fail_low = 1;
-                    self.si.fail_high = 0;
-                    self.si.singular = 0;
+                    self.search_info.fail_low = 1;
+                    self.search_info.fail_high = 0;
+                    self.search_info.singular = 0;
                     if depth >= 14 {
-                        self.send_pv(depth / 2, old_alpha, beta, value);
+                        self.send_principal_variation(depth / 2, old_alpha, beta, value);
                     }
                 }
             }
 
             // skip_hash_move:
-            self.pos.data[self.pos.cur].gen_flags = 0;
-            if !self.check(me) {
-                self.pos.data[self.pos.cur].stage = STAGE_SEARCH;
-                let pmv = self.pos.data[self.pos.cur].mv as i32;
+            self.pos.states[self.pos.current].generation_flags = 0;
+            if !self.check(color) {
+                self.pos.states[self.pos.current].stage = STAGE_SEARCH;
+                let pmv = self.pos.states[self.pos.current].chess_move as i32;
                 if pmv != 0 {
                     let ri = self.ref_index(pmv);
-                    self.pos.data[self.pos.cur].refs[0] = self.reference[ri].refs[0];
-                    self.pos.data[self.pos.cur].refs[1] = self.reference[ri].refs[1];
+                    self.pos.states[self.pos.current].refutation_moves[0] =
+                        self.reference[ri].refutation_moves[0];
+                    self.pos.states[self.pos.current].refutation_moves[1] =
+                        self.reference[ri].refutation_moves[1];
                 }
             } else {
-                self.pos.data[self.pos.cur].stage = STAGE_EVASION;
-                let pmv = self.pos.data[self.pos.cur].mv as i32;
+                self.pos.states[self.pos.current].stage = STAGE_EVASION;
+                let pmv = self.pos.states[self.pos.current].chess_move as i32;
                 if pmv != 0 {
                     let ri = self.ref_index(pmv);
-                    self.pos.data[self.pos.cur].refs[0] = self.reference[ri].check_refs[0];
-                    self.pos.data[self.pos.cur].refs[1] = self.reference[ri].check_refs[1];
+                    self.pos.states[self.pos.current].refutation_moves[0] =
+                        self.reference[ri].check_refs[0];
+                    self.pos.states[self.pos.current].refutation_moves[1] =
+                        self.reference[ri].check_refs[1];
                 }
             }
-            self.pos.data[self.pos.cur].killer[0] = 0;
-            self.move_lists[self.pos.cur][0] = 0;
+            self.pos.states[self.pos.current].killer_moves[0] = 0;
+            self.move_lists[self.pos.current][0] = 0;
             if root {
-                self.pos.data[self.pos.cur].current = 1;
+                self.pos.states[self.pos.current].current = 1;
             } else {
-                self.pos.data[self.pos.cur].current = 0;
+                self.pos.states[self.pos.current].current = 0;
             }
 
             loop {
-                let mv = self.get_move(me, root);
-                if mv == 0 {
+                let chess_move = self.get_move(color, root);
+                if chess_move == 0 {
                     break;
                 }
-                if mv == hash_move {
+                if chess_move == hash_move {
                     continue;
                 }
-                if self.is_illegal(me, mv) {
+                if self.is_illegal(color, chess_move) {
                     continue;
                 }
                 cnt += 1;
                 if root {
-                    for s in self.pos.data.iter_mut().skip(1).take(127) {
+                    for s in self.pos.states.iter_mut().skip(1).take(127) {
                         *s = State::default();
                     }
-                    self.send_curr_move(mv, cnt);
+                    self.send_current_move(chess_move, cnt);
                 }
-                if self.is_repetition(alpha + 1, mv) {
+                if self.is_repetition(alpha + 1, chess_move) {
                     continue;
                 }
-                let check = self.is_check(me, mv);
+                let check = self.is_check(color, chess_move);
                 ext = if check {
                     2
                 } else {
-                    i32::max(pext, self.extension(true, mv, depth))
+                    i32::max(pext, self.extension(true, chess_move, depth))
                 };
                 new_depth = depth - 2 + ext;
-                let st = self.pos.data[self.pos.cur];
+                let state = self.pos.states[self.pos.current];
                 if depth >= 6
-                    && (mv & 0xE000) == 0
-                    && self.pos.board.square[move_to(mv)] == 0
+                    && (chess_move & 0xE000) == 0
+                    && self.pos.board.squares[move_to(chess_move)] == 0
                     && (root
-                        || (mv != st.killer[1] as i32 && mv != st.killer[2] as i32)
-                        || self.check(me))
+                        || (chess_move != state.killer_moves[1] as i32
+                            && chess_move != state.killer_moves[2] as i32)
+                        || self.check(color))
                     && cnt > 3
                 {
-                    let mut reduction = msb(cnt as u64) as i32 - 1;
-                    if mv == st.refs[0] as i32 || mv == st.refs[1] as i32 {
+                    let mut reduction = most_significant_bit(cnt as u64) as i32 - 1;
+                    if chess_move == state.refutation_moves[0] as i32
+                        || chess_move == state.refutation_moves[1] as i32
+                    {
                         reduction = i32::max(0, reduction - 1);
                     }
                     if reduction >= 2
                         && (self.queen(WHITE) | self.queen(BLACK)) == 0
-                        && popcount(self.non_pawn_king_all()) <= 4
+                        && population_count(self.non_pawn_king_all()) <= 4
                     {
                         reduction += reduction / 2;
                     }
                     new_depth = i32::max(3, new_depth - reduction);
                 }
-                self.do_move(me, mv);
+                self.make_move(color, chess_move);
                 let mut value = if new_depth <= 1 {
-                    -self.pv_search(
-                        opp(me),
+                    -self.principal_variation_search(
+                        opponent(color),
                         false,
                         -beta,
                         -alpha,
@@ -4375,7 +4616,7 @@ impl Engine {
                     )
                 } else {
                     -self.search(
-                        opp(me),
+                        opponent(color),
                         false,
                         -alpha,
                         new_depth,
@@ -4387,12 +4628,12 @@ impl Engine {
                     if root {
                         self.root_list[(cnt - 1) as usize] =
                             set_score(self.root_list[(cnt - 1) as usize], 1);
-                        self.si.early = 0;
-                        self.stats.best_move = mv;
+                        self.search_info.early = 0;
+                        self.stats.best_move = chess_move;
                     }
                     new_depth = depth - 2 + ext;
-                    value = -self.pv_search(
-                        opp(me),
+                    value = -self.principal_variation_search(
+                        opponent(color),
                         false,
                         -beta,
                         -alpha,
@@ -4403,50 +4644,50 @@ impl Engine {
                         self.stats.best_move = old_best;
                     }
                 }
-                self.undo_move(me, mv);
+                self.unmake_move(color, chess_move);
                 if value > alpha {
                     if root {
                         self.root_list[(cnt - 1) as usize] =
                             set_score(self.root_list[(cnt - 1) as usize], cnt + 3);
-                        self.si.change = 1;
-                        self.si.fail_low = 0;
-                        self.stats.best_move = mv;
+                        self.search_info.change = 1;
+                        self.search_info.fail_low = 0;
+                        self.stats.best_move = chess_move;
                         self.stats.best_score = value;
                         if depth >= 14 {
-                            self.send_pv(depth / 2, old_alpha, beta, value);
+                            self.send_principal_variation(depth / 2, old_alpha, beta, value);
                         }
                     }
                     alpha = value;
-                    self.pos.data[self.pos.cur].best = mv;
+                    self.pos.states[self.pos.current].best_move = chess_move;
                     if value >= beta {
-                        cut_move = mv;
-                        break 'pv;
+                        cut_move = chess_move;
+                        break 'principal_variation;
                     }
                 }
             }
         }
 
         if cut_move != 0 {
-            self.hash_low(cut_move, alpha, depth);
+            self.store_lower_bound(cut_move, alpha, depth);
             return alpha;
         }
-        if cnt == 0 && !self.check(me) {
-            self.hash_high(0, 127);
-            self.hash_low(0, 0, 127);
-            self.hash_exact(0, 0, 127, 0, 0, 0);
+        if cnt == 0 && !self.check(color) {
+            self.store_upper_bound(0, 127);
+            self.store_lower_bound(0, 0, 127);
+            self.store_exact(0, 0, 127, 0, 0, 0);
             return 0;
         }
         if !root || self.search_moves == 0 {
-            self.hash_high(alpha, depth);
+            self.store_upper_bound(alpha, depth);
         }
         if alpha > old_alpha {
-            let best = self.pos.data[self.pos.cur].best;
-            self.hash_low(best, alpha, depth);
+            let best = self.pos.states[self.pos.current].best_move;
+            self.store_lower_bound(best, alpha, depth);
             if best != hash_move {
                 ex_depth = 0;
             }
             if !root || self.search_moves == 0 {
-                self.hash_exact(
+                self.store_exact(
                     best,
                     alpha,
                     depth,
@@ -4460,68 +4701,70 @@ impl Engine {
     }
 
     /// `multipv(depth)`
-    pub fn multipv(&mut self, me: Color, depth: i32) -> i32 {
+    pub fn multipv(&mut self, color: Color, depth: i32) -> i32 {
         let mut low = MATE_VALUE;
         let mut new_depth;
         let mut ext;
-        let pvn = self.settings.multi_pv;
+        let pvn = self.settings.multi_principal_variation;
         let mut cnt = 0usize;
         while cnt < pvn {
-            let m = self.multi_pv[cnt];
-            let mv = m & 0xFFFF;
-            if mv == 0 {
+            let m = self.multi_principal_variation[cnt];
+            let chess_move = m & 0xFFFF;
+            if chess_move == 0 {
                 break;
             }
-            self.multi_pv[cnt] = mv;
-            ext = self.extension(true, mv, depth);
+            self.multi_principal_variation[cnt] = chess_move;
+            ext = self.extension(true, chess_move, depth);
             new_depth = depth - 2 + ext;
-            self.do_move(me, mv);
-            let value = -self.pv_search(
-                opp(me),
+            self.make_move(color, chess_move);
+            let value = -self.principal_variation_search(
+                opponent(color),
                 false,
                 -MATE_VALUE,
                 MATE_VALUE,
                 new_depth,
                 Self::ext_flag(ext),
             );
-            self.multi_pv[cnt] |= value << 16;
+            self.multi_principal_variation[cnt] |= value << 16;
             if value < low {
                 low = value;
             }
-            self.undo_move(me, mv);
+            self.unmake_move(color, chess_move);
             let mut i = cnt as i32 - 1;
             while i >= 0 {
-                if (self.multi_pv[i as usize] >> 16) < value {
-                    self.multi_pv[(i + 1) as usize] = self.multi_pv[i as usize];
-                    self.multi_pv[i as usize] = mv | (value << 16);
+                if (self.multi_principal_variation[i as usize] >> 16) < value {
+                    self.multi_principal_variation[(i + 1) as usize] =
+                        self.multi_principal_variation[i as usize];
+                    self.multi_principal_variation[i as usize] = chess_move | (value << 16);
                 }
                 i -= 1;
             }
-            self.stats.best_move = self.multi_pv[0] & 0xFFFF;
-            self.pos.data[self.pos.cur].score = (self.multi_pv[0] >> 16) as i16;
-            self.send_multipv(depth / 2, cnt as i32);
+            self.stats.best_move = self.multi_principal_variation[0] & 0xFFFF;
+            self.pos.states[self.pos.current].score =
+                (self.multi_principal_variation[0] >> 16) as i16;
+            self.send_multi_principal_variation(depth / 2, cnt as i32);
             cnt += 1;
         }
         while cnt < 256 {
-            let m = self.multi_pv[cnt];
-            let mv = m & 0xFFFF;
-            if mv == 0 {
+            let m = self.multi_principal_variation[cnt];
+            let chess_move = m & 0xFFFF;
+            if chess_move == 0 {
                 break;
             }
-            self.multi_pv[cnt] = mv;
-            ext = self.extension(true, mv, depth);
+            self.multi_principal_variation[cnt] = chess_move;
+            ext = self.extension(true, chess_move, depth);
             new_depth = depth - 2 + ext;
-            self.do_move(me, mv);
+            self.make_move(color, chess_move);
             let mut value = -self.search(
-                opp(me),
+                opponent(color),
                 false,
                 -low,
                 new_depth,
                 FLAG_NEAT_SEARCH | Self::ext_flag(ext),
             );
             if value > low {
-                value = -self.pv_search(
-                    opp(me),
+                value = -self.principal_variation_search(
+                    opponent(color),
                     false,
                     -MATE_VALUE,
                     -low,
@@ -4529,31 +4772,34 @@ impl Engine {
                     Self::ext_flag(ext),
                 );
             }
-            self.multi_pv[cnt] |= value << 16;
-            self.undo_move(me, mv);
+            self.multi_principal_variation[cnt] |= value << 16;
+            self.unmake_move(color, chess_move);
             if value > low {
                 let mut i = cnt as i32;
                 while i >= pvn as i32 {
-                    self.multi_pv[i as usize] = self.multi_pv[(i - 1) as usize];
+                    self.multi_principal_variation[i as usize] =
+                        self.multi_principal_variation[(i - 1) as usize];
                     i -= 1;
                 }
-                self.multi_pv[pvn - 1] = mv | (value << 16);
+                self.multi_principal_variation[pvn - 1] = chess_move | (value << 16);
                 let mut i = pvn as i32 - 2;
                 while i >= 0 {
-                    if (self.multi_pv[i as usize] >> 16) < value {
-                        self.multi_pv[(i + 1) as usize] = self.multi_pv[i as usize];
-                        self.multi_pv[i as usize] = mv | (value << 16);
+                    if (self.multi_principal_variation[i as usize] >> 16) < value {
+                        self.multi_principal_variation[(i + 1) as usize] =
+                            self.multi_principal_variation[i as usize];
+                        self.multi_principal_variation[i as usize] = chess_move | (value << 16);
                     }
                     i -= 1;
                 }
-                self.stats.best_move = self.multi_pv[0] & 0xFFFF;
-                self.pos.data[self.pos.cur].score = (self.multi_pv[0] >> 16) as i16;
-                low = self.multi_pv[pvn - 1] >> 16;
-                self.send_multipv(depth / 2, cnt as i32);
+                self.stats.best_move = self.multi_principal_variation[0] & 0xFFFF;
+                self.pos.states[self.pos.current].score =
+                    (self.multi_principal_variation[0] >> 16) as i16;
+                low = self.multi_principal_variation[pvn - 1] >> 16;
+                self.send_multi_principal_variation(depth / 2, cnt as i32);
             }
             cnt += 1;
         }
-        self.pos.data[self.pos.cur].score as i32
+        self.pos.states[self.pos.current].score as i32
     }
 }
 
@@ -4586,13 +4832,13 @@ pub const SCHEDULE: [u32; 20] = [
 
 impl Engine {
     pub fn root(&mut self) {
-        let me = self.pos.data[self.pos.cur].turn as Color;
-        self.root_color(me);
+        let color = self.pos.states[self.pos.current].side_to_move as Color;
+        self.root_color(color);
     }
 
     #[allow(clippy::too_many_lines)]
     #[allow(unused_assignments)]
-    pub fn root_color(&mut self, me: Color) {
+    pub fn root_color(&mut self, color: Color) {
         let mut start_depth = 2i32;
         let mut hash_depth = 0i32;
         let mut hash_value = 0i32;
@@ -4603,7 +4849,7 @@ impl Engine {
         let mut knodes = 0i32;
 
         self.evaluate();
-        self.gen_root_moves(me);
+        self.generate_root_moves(color);
         if self.thread_id != 0 {
             let n = self
                 .root_list
@@ -4615,11 +4861,11 @@ impl Engine {
                 self.root_list[..n].rotate_left(shift);
             }
         }
-        if self.settings.multi_pv > 1 {
-            self.multi_pv = [0; 256];
+        if self.settings.multi_principal_variation > 1 {
+            self.multi_principal_variation = [0; 256];
             let mut i = 0;
             while self.root_list[i] != 0 {
-                self.multi_pv[i] = self.root_list[i];
+                self.multi_principal_variation[i] = self.root_list[i];
                 i += 1;
             }
         }
@@ -4629,21 +4875,28 @@ impl Engine {
             return;
         }
         if self.root_list[1] == 0 {
-            let value = self.pv_search(me, true, -MATE_VALUE, MATE_VALUE, 4, FLAG_NEAT_SEARCH);
+            let value = self.principal_variation_search(
+                color,
+                true,
+                -MATE_VALUE,
+                MATE_VALUE,
+                4,
+                FLAG_NEAT_SEARCH,
+            );
             self.last_depth = 128;
-            self.send_pv(6, -MATE_VALUE, MATE_VALUE, value);
+            self.send_principal_variation(6, -MATE_VALUE, MATE_VALUE, value);
             self.stats.stop = true;
             return;
         }
 
-        self.si = SearchInfo::default();
-        self.base_si = SearchInfo::default();
+        self.search_info = SearchInfo::default();
+        self.base_search_info = SearchInfo::default();
         self.previous = -MATE_VALUE;
-        if let Some(idx) = self.probe_pv_hash() {
-            let e = self.pv_hash.load(idx);
-            if e.mv != 0
-                && self.is_legal(me, e.mv as i32)
-                && e.mv as i32 == self.stats.best_move
+        if let Some(idx) = self.probe_principal_variation_table() {
+            let e = self.principal_variation_table.load(idx);
+            if e.chess_move != 0
+                && self.is_legal(color, e.chess_move as i32)
+                && e.chess_move as i32 == self.stats.best_move
                 && (e.depth as i32) > hash_depth
             {
                 hash_depth = e.depth as i32;
@@ -4654,12 +4907,17 @@ impl Engine {
             }
         }
         let mut depth = start_depth;
-        if hash_depth != 0 && self.settings.multi_pv == 1 {
+        if hash_depth != 0 && self.settings.multi_principal_variation == 1 {
             self.previous = hash_value;
             self.stats.best_score = hash_value;
             depth = hash_depth;
-            if self.pv_hashing != 0 {
-                self.send_pv(depth / 2, -MATE_VALUE, MATE_VALUE, self.stats.best_score);
+            if self.principal_variation_hashing != 0 {
+                self.send_principal_variation(
+                    depth / 2,
+                    -MATE_VALUE,
+                    MATE_VALUE,
+                    self.stats.best_score,
+                );
                 start_depth = (depth + 2) & !1;
                 depth = start_depth;
             }
@@ -4673,11 +4931,11 @@ impl Engine {
                 if ex_depth >= depth - i32::min(12, depth / 2)
                     && ex_value <= hash_value - EXCL_SINGLE_PV
                 {
-                    self.base_si.early = 1;
-                    self.base_si.singular = 1;
+                    self.base_search_info.early = 1;
+                    self.base_search_info.singular = 1;
                     if ex_value <= hash_value - EXCL_DOUBLE_PV {
                         time = (time * TIME_SING_TWO_MARGIN) / 100;
-                        self.base_si.singular = 2;
+                        self.base_search_info.singular = 2;
                     } else {
                         time = (time * TIME_SING_ONE_MARGIN) / 100;
                     }
@@ -4699,33 +4957,40 @@ impl Engine {
 
         // set_jump:
         self.save_board = self.pos.board;
-        self.save_state = self.pos.data[0];
-        self.save_sp = self.pos.sp;
+        self.save_state = self.pos.states[0];
+        self.save_sp = self.pos.stack_pointer;
 
         let mut value = 0i32;
         while depth < self.shared.depth_limit as i32 && depth < 256 {
             self.stats.depth = depth;
-            let sched = SCHEDULE[(self.stats.id as usize) % SCHEDULE.len()];
+            let sched = SCHEDULE[(self.stats.thread_id as usize) % SCHEDULE.len()];
             let idx = ((self.shared.root_depth.wrapping_add((depth / 2) as u32)) % 24) as u32;
             if ((sched >> idx) & 1) == 0 {
                 depth += 2;
                 continue;
             }
-            for s in self.pos.data.iter_mut().skip(1).take(127) {
+            for s in self.pos.states.iter_mut().skip(1).take(127) {
                 *s = State::default();
             }
-            self.si.early = 1;
-            self.si.change = 0;
-            self.si.fail_high = 0;
-            self.si.fail_low = 0;
-            self.si.singular = 0;
+            self.search_info.early = 1;
+            self.search_info.change = 0;
+            self.search_info.fail_high = 0;
+            self.search_info.fail_low = 0;
+            self.search_info.singular = 0;
 
-            if self.settings.multi_pv > 1 {
-                value = self.multipv(me, depth);
+            if self.settings.multi_principal_variation > 1 {
+                value = self.multipv(color, depth);
                 self.last_value = value;
                 self.last_exact_value = value;
             } else if depth / 2 < 7 || self.aspiration == 0 {
-                value = self.pv_search(me, true, -MATE_VALUE, MATE_VALUE, depth, FLAG_NEAT_SEARCH);
+                value = self.principal_variation_search(
+                    color,
+                    true,
+                    -MATE_VALUE,
+                    MATE_VALUE,
+                    depth,
+                    FLAG_NEAT_SEARCH,
+                );
                 self.last_value = value;
                 self.last_exact_value = value;
             } else {
@@ -4734,8 +4999,8 @@ impl Engine {
                 let mut beta = self.previous + delta;
                 loop {
                     if delta >= 16 * 32 {
-                        value = self.pv_search(
-                            me,
+                        value = self.principal_variation_search(
+                            color,
                             true,
                             -MATE_VALUE,
                             MATE_VALUE,
@@ -4746,21 +5011,28 @@ impl Engine {
                         self.last_exact_value = value;
                         break;
                     }
-                    value = self.pv_search(me, true, alpha, beta, depth, FLAG_NEAT_SEARCH);
+                    value = self.principal_variation_search(
+                        color,
+                        true,
+                        alpha,
+                        beta,
+                        depth,
+                        FLAG_NEAT_SEARCH,
+                    );
                     if value <= alpha {
-                        self.si.fail_high = 0;
-                        self.si.fail_low = 1;
+                        self.search_info.fail_high = 0;
+                        self.search_info.fail_low = 1;
                         alpha -= delta;
                         delta *= 2;
                         self.last_value = value;
-                        self.base_si = self.si;
+                        self.base_search_info = self.search_info;
                         continue;
                     } else if value >= beta {
-                        self.si.fail_high = 1;
-                        self.si.fail_low = 0;
-                        self.si.early = 1;
-                        self.si.change = 0;
-                        self.si.singular = self.si.singular.max(1);
+                        self.search_info.fail_high = 1;
+                        self.search_info.fail_low = 0;
+                        self.search_info.early = 1;
+                        self.search_info.change = 0;
+                        self.search_info.singular = self.search_info.singular.max(1);
                         beta += delta;
                         delta *= 2;
                         self.last_depth = depth;
@@ -4774,16 +5046,17 @@ impl Engine {
                             self.stats.depth = depth;
                         }
                         self.inst_cnt = 0;
-                        if self.stats.id == 0 && self.time_to_stop(&self.si, self.last_time, false)
+                        if self.stats.thread_id == 0
+                            && self.time_to_stop(&self.search_info, self.last_time, false)
                         {
                             self.stats.stop = true;
                             break;
                         }
-                        for s in self.pos.data.iter_mut().skip(1).take(127) {
+                        for s in self.pos.states.iter_mut().skip(1).take(127) {
                             *s = State::default();
                         }
                         self.last_value = value;
-                        self.base_si = self.si;
+                        self.base_search_info = self.search_info;
                         continue;
                     } else {
                         self.last_value = value;
@@ -4797,18 +5070,20 @@ impl Engine {
             }
             // finish:
             if value < self.previous - 50 {
-                self.si.bad = 1;
+                self.search_info.bad = 1;
             } else {
-                self.si.bad = 0;
+                self.search_info.bad = 0;
             }
-            self.base_si = self.si;
+            self.base_search_info = self.search_info;
             self.last_depth = depth;
             let now = now_ms();
             self.last_time = i64::max(prev_time, now.saturating_sub(self.shared.start_time) as i64);
             self.last_speed = (self.pos.nodes / i64::max(self.last_time, 1) as u64) as i64;
             self.previous = value;
             self.inst_cnt = 0;
-            if self.stats.id == 0 && self.time_to_stop(&self.si, self.last_time, false) {
+            if self.stats.thread_id == 0
+                && self.time_to_stop(&self.search_info, self.last_time, false)
+            {
                 self.stats.stop = true;
                 break;
             }
@@ -4816,10 +5091,10 @@ impl Engine {
         }
 
         // stop:
-        self.pos.cur = 0;
+        self.pos.current = 0;
         self.pos.board = self.save_board;
-        self.pos.data[0] = self.save_state;
-        self.pos.sp = self.save_sp;
+        self.pos.states[0] = self.save_state;
+        self.pos.stack_pointer = self.save_sp;
         if !self.stats.stop {
             self.stats.stop = true;
         }
@@ -4827,12 +5102,12 @@ impl Engine {
     }
 
     pub fn result(&self) -> SearchResult {
-        let mut pv = Vec::new();
-        for &m in self.stats.pv.iter() {
+        let mut principal_variation = Vec::new();
+        for &m in self.stats.principal_variation.iter() {
             if m == 0 {
                 break;
             }
-            pv.push(m);
+            principal_variation.push(m);
         }
         SearchResult {
             best_move: if self.stats.best_move != 0 {
@@ -4840,16 +5115,16 @@ impl Engine {
             } else {
                 self.root_list[0]
             },
-            ponder_move: if self.stats.pv[0] != 0 {
-                self.stats.pv[1]
+            ponder_move: if self.stats.principal_variation[0] != 0 {
+                self.stats.principal_variation[1]
             } else {
                 0
             },
             score: self.stats.best_score,
             nodes: self.pos.nodes,
             depth: self.last_depth / 2,
-            sel_depth: self.stats.sel_depth / 2,
-            pv,
+            selective_depth: self.stats.selective_depth / 2,
+            principal_variation,
         }
     }
 
@@ -4857,13 +5132,13 @@ impl Engine {
         self.shared.depth_limit = 2 * limits.depth + 2;
         self.shared.node_limit = limits.nodes;
         self.shared.ponder = limits.ponder;
-        let turn = self.pos.data[self.pos.cur].turn as Color;
-        let time = if turn == WHITE {
+        let side_to_move = self.pos.states[self.pos.current].side_to_move as Color;
+        let time = if side_to_move == WHITE {
             limits.wtime
         } else {
             limits.btime
         };
-        let inc = if turn == WHITE {
+        let inc = if side_to_move == WHITE {
             limits.winc
         } else {
             limits.binc
@@ -4883,7 +5158,7 @@ impl Engine {
         if movestogo != 0 {
             nmoves = movestogo;
         } else {
-            let ply = self.pos.data[self.pos.cur].ply as i64;
+            let ply = self.pos.states[self.pos.current].ply as i64;
             if ply > 40 {
                 nmoves += i64::min(ply - 40, (100 - ply) / 2) as u64;
             }
@@ -4924,10 +5199,10 @@ impl Engine {
     fn go_single_at(&mut self, limits: &SearchLimits, start_time: u64) -> SearchResult {
         self.apply_limits(limits);
         self.pos.nodes = 0;
-        self.pos.tb_hits = 0;
+        self.pos.tablebase_hits = 0;
         self.stats.stop = false;
-        self.stats.pv = [0; 64];
-        self.stats.id = self.thread_id as i32;
+        self.stats.principal_variation = [0; 64];
+        self.stats.thread_id = self.thread_id as i32;
         self.shared.start_time = start_time;
         self.nodes_base = 0;
         self.save_root();
@@ -4986,28 +5261,31 @@ mod extra_search_tests {
     #[test]
     fn see_recognises_free_capture() {
         let mut e = Engine::with_hash_mb(1);
-        e.get_board("4k3/8/8/3q4/8/8/3R4/4K3 w - - 0 1");
+        e.set_fen("4k3/8/8/3q4/8/8/3R4/4K3 w - - 0 1");
         e.evaluate();
-        let me = e.pos.cur().turn as Color;
-        let cap = make_move(11, 35); // Rxd5
-        assert!(e.see(me, cap, 0));
+        let color = e.pos.current().side_to_move as Color;
+        let cap = encode_quiet_move(11, 35); // Rxd5
+        assert!(e.static_exchange_evaluation(color, cap, 0));
     }
 
     #[test]
     fn hash_store_and_probe_round_trip() {
         let mut e = Engine::with_hash_mb(1);
-        e.get_board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
-        e.hash_low(0x1234, 42, 7);
-        e.hash_high(50, 9);
-        let idx = e.probe_hash().expect("hash entry");
-        assert_eq!(e.hash.load(idx).key, e.pos.cur().key as u32);
+        e.set_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        e.store_lower_bound(0x1234, 42, 7);
+        e.store_upper_bound(50, 9);
+        let idx = e.probe_transposition_table().expect("hash entry");
+        assert_eq!(
+            e.transposition_table.load(idx).key,
+            e.pos.current().key as u32
+        );
     }
 
     #[test]
     fn finds_mate_in_one() {
         let mut e = Engine::with_hash_mb(1);
         e.reporter = Box::new(NullReporter);
-        e.get_board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1");
+        e.set_fen("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1");
         let r = e.go(&SearchLimits {
             depth: 1,
             infinite: true,
@@ -5024,7 +5302,7 @@ mod extra_search_tests {
         let mut e = Engine::with_hash_mb(1);
         let path = format!("{}/tests/fixtures/syzygy", env!("CARGO_MANIFEST_DIR"));
         e.set_syzygy_path(&path).unwrap();
-        e.get_board("8/8/8/8/8/8/Q7/K1k5 w - - 0 1");
+        e.set_fen("8/8/8/8/8/8/Q7/K1k5 w - - 0 1");
         assert_eq!(e.probe_tb_wdl(), Some(TB_MATE_VALUE));
         assert_eq!(e.search(WHITE, false, 0, 4, 0), TB_MATE_VALUE);
     }
@@ -5032,11 +5310,11 @@ mod extra_search_tests {
     #[test]
     fn qsearch_never_below_static_eval_for_side_to_move() {
         let mut e = Engine::with_hash_mb(1);
-        e.get_board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 3");
+        e.set_fen("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 3");
         e.evaluate();
-        let me = e.pos.cur().turn as Color;
-        let eval = e.pos.cur().score as i32;
-        let q = e.q_search(me, false, -MATE_VALUE, MATE_VALUE, 0, FLAG_NEAT_SEARCH);
+        let color = e.pos.current().side_to_move as Color;
+        let eval = e.pos.current().score as i32;
+        let q = e.quiescence_search(color, false, -MATE_VALUE, MATE_VALUE, 0, FLAG_NEAT_SEARCH);
         assert!(q >= eval - 1, "qsearch {q} < eval {eval}");
     }
 }
@@ -5051,9 +5329,9 @@ mod legality_tests {
         let mut e = Engine::with_hash_mb(1);
         // The white e2 pawn is pinned by the rook on e8.  Moving along the
         // e-file is legal, capturing on d3 is not.
-        e.get_board("k3r3/8/8/8/8/3p4/4P3/4K3 w - - 0 1");
+        e.set_fen("k3r3/8/8/8/8/3p4/4P3/4K3 w - - 0 1");
         e.evaluate();
-        assert!(e.is_illegal(WHITE, make_move(12, 19))); // e2xd3
-        assert!(!e.is_illegal(WHITE, make_move(12, 20))); // e2e3
+        assert!(e.is_illegal(WHITE, encode_quiet_move(12, 19))); // e2xd3
+        assert!(!e.is_illegal(WHITE, encode_quiet_move(12, 20))); // e2e3
     }
 }

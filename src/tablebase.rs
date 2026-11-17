@@ -25,12 +25,12 @@ impl EngineAdapter for GullAdapter {
             TbColor::White => WHITE,
             TbColor::Black => BLACK,
         };
-        tables().p_att[c][square as usize]
+        tables().pawn_attacks[c][square as usize]
     }
 
     #[inline]
     fn knight_attacks(square: u64) -> u64 {
-        tables().n_att[square as usize]
+        tables().knight_attacks[square as usize]
     }
 
     #[inline]
@@ -50,7 +50,7 @@ impl EngineAdapter for GullAdapter {
 
     #[inline]
     fn king_attacks(square: u64) -> u64 {
-        tables().s_area[square as usize]
+        tables().king_attack_area[square as usize]
     }
 }
 
@@ -122,20 +122,20 @@ pub fn root_move(dtz: &pyrrhic_rs::DtzResult) -> Option<i32> {
     let to = dtz.to_square as i32;
     let mut flags = 0i32;
     if dtz.ep {
-        flags |= FLAG_EP;
+        flags |= FLAG_EN_PASSANT;
     } else {
         flags |= match dtz.promotion {
             TbPiece::Pawn => 0,
-            TbPiece::Knight => FLAG_P_KNIGHT,
+            TbPiece::Knight => FLAG_PROMOTION_KNIGHT,
             TbPiece::Bishop => {
                 if bit(to as usize) & LIGHT_AREA != 0 {
-                    FLAG_P_LIGHT
+                    FLAG_PROMOTION_LIGHT_BISHOP
                 } else {
-                    FLAG_P_DARK
+                    FLAG_PROMOTION_DARK_BISHOP
                 }
             }
-            TbPiece::Rook => FLAG_P_ROOK,
-            TbPiece::Queen => FLAG_P_QUEEN,
+            TbPiece::Rook => FLAG_PROMOTION_ROOK,
+            TbPiece::Queen => FLAG_PROMOTION_QUEEN,
             TbPiece::King => return None,
         };
     }

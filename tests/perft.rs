@@ -12,8 +12,8 @@ fn perft(e: &mut Engine, depth: u32) -> u64 {
     if depth == 0 {
         return 1;
     }
-    let me = e.pos.cur().turn as Color;
-    e.gen_root_moves(me);
+    let color = e.pos.current().side_to_move as Color;
+    e.generate_root_moves(color);
     let mut moves = [0i32; 256];
     let mut n = 0usize;
     while n < e.root_list.len() && e.root_list[n] != 0 {
@@ -24,17 +24,17 @@ fn perft(e: &mut Engine, depth: u32) -> u64 {
         return n as u64;
     }
     let mut nodes = 0;
-    for &mv in moves.iter().take(n) {
-        e.do_move(me, mv);
+    for &chess_move in moves.iter().take(n) {
+        e.make_move(color, chess_move);
         nodes += perft(e, depth - 1);
-        e.undo_move(me, mv);
+        e.unmake_move(color, chess_move);
     }
     nodes
 }
 
 fn check(fen: &str, expected: &[u64]) {
     let mut e = Engine::with_hash_mb(1);
-    e.get_board(fen);
+    e.set_fen(fen);
     for (i, &want) in expected.iter().enumerate() {
         assert_eq!(perft(&mut e, i as u32 + 1), want, "{fen} depth {}", i + 1);
     }
@@ -75,10 +75,10 @@ fn perft_position_four() {
 #[test]
 fn ep_is_generated() {
     let mut e = Engine::with_hash_mb(1);
-    e.get_board("rnbqkbnr/1ppp1ppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3");
-    let me = e.pos.cur().turn as Color;
+    e.set_fen("rnbqkbnr/1ppp1ppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3");
+    let color = e.pos.current().side_to_move as Color;
     let mut m = [0i32; 256];
-    let n = e.gen_legal_moves(me, &mut m);
+    let n = e.generate_legal_moves(color, &mut m);
     let all: Vec<String> = m[..n]
         .iter()
         .map(|&x| gull::types::move_to_string(x))
@@ -89,13 +89,13 @@ fn ep_is_generated() {
 #[test]
 fn ep_after_double_push() {
     let mut e = Engine::with_hash_mb(1);
-    e.get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     for m in ["e2e4", "a7a6", "e4e5", "d7d5"] {
         assert!(e.play_uci_move(m), "{m}");
     }
-    let me = e.pos.cur().turn as Color;
+    let color = e.pos.current().side_to_move as Color;
     let mut m = [0i32; 256];
-    let n = e.gen_legal_moves(me, &mut m);
+    let n = e.generate_legal_moves(color, &mut m);
     let all: Vec<String> = m[..n]
         .iter()
         .map(|&x| gull::types::move_to_string(x))
@@ -106,9 +106,9 @@ fn ep_after_double_push() {
 #[test]
 fn root_moves_include_ep() {
     let mut e = Engine::with_hash_mb(1);
-    e.get_board("rnbqkbnr/1pp1pppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1");
-    let me = e.pos.cur().turn as Color;
-    e.gen_root_moves(me);
+    e.set_fen("rnbqkbnr/1pp1pppp/p7/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1");
+    let color = e.pos.current().side_to_move as Color;
+    e.generate_root_moves(color);
     let mut all = Vec::new();
     for &x in e.root_list.iter() {
         if x == 0 {

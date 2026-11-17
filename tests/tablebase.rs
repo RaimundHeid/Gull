@@ -16,24 +16,30 @@ fn fixture_path() -> String {
 #[test]
 fn adapter_uses_gull_attack_tables() {
     let t = gull::tables::tables();
-    for sq in 0..64u64 {
+    for square_index in 0..64u64 {
         assert_eq!(
-            GullAdapter::pawn_attacks(pyrrhic_rs::Color::White, sq),
-            t.p_att[WHITE][sq as usize]
+            GullAdapter::pawn_attacks(pyrrhic_rs::Color::White, square_index),
+            t.pawn_attacks[WHITE][square_index as usize]
         );
         assert_eq!(
-            GullAdapter::pawn_attacks(pyrrhic_rs::Color::Black, sq),
-            t.p_att[BLACK][sq as usize]
-        );
-        assert_eq!(GullAdapter::knight_attacks(sq), t.n_att[sq as usize]);
-        assert_eq!(GullAdapter::king_attacks(sq), t.s_area[sq as usize]);
-        assert_eq!(
-            GullAdapter::bishop_attacks(sq, 0x00FF_0000_FF00_0000),
-            t.bishop_attacks(sq as usize, 0x00FF_0000_FF00_0000)
+            GullAdapter::pawn_attacks(pyrrhic_rs::Color::Black, square_index),
+            t.pawn_attacks[BLACK][square_index as usize]
         );
         assert_eq!(
-            GullAdapter::rook_attacks(sq, 0x00FF_0000_FF00_0000),
-            t.rook_attacks(sq as usize, 0x00FF_0000_FF00_0000)
+            GullAdapter::knight_attacks(square_index),
+            t.knight_attacks[square_index as usize]
+        );
+        assert_eq!(
+            GullAdapter::king_attacks(square_index),
+            t.king_attack_area[square_index as usize]
+        );
+        assert_eq!(
+            GullAdapter::bishop_attacks(square_index, 0x00FF_0000_FF00_0000),
+            t.bishop_attacks(square_index as usize, 0x00FF_0000_FF00_0000)
+        );
+        assert_eq!(
+            GullAdapter::rook_attacks(square_index, 0x00FF_0000_FF00_0000),
+            t.rook_attacks(square_index as usize, 0x00FF_0000_FF00_0000)
         );
     }
 }
@@ -43,7 +49,7 @@ fn loads_kqvk_and_probes_root() {
     let _lock = TB_LOCK.lock().unwrap();
     let mut e = Box::new(Engine::with_hash_mb(1));
     assert_eq!(e.set_syzygy_path(&fixture_path()).unwrap(), 3);
-    e.get_board(KQK);
+    e.set_fen(KQK);
     let r = e.go(&gull::search::SearchLimits {
         depth: 5,
         ..Default::default()
@@ -51,7 +57,7 @@ fn loads_kqvk_and_probes_root() {
     assert_ne!(r.best_move, 0);
     assert_eq!(r.nodes, 1, "root TB result should bypass search");
     assert!(r.score > 20000, "expected a Syzygy win, got {}", r.score);
-    assert_eq!(r.pv, vec![r.best_move]);
+    assert_eq!(r.principal_variation, vec![r.best_move]);
 }
 
 #[test]
@@ -85,7 +91,7 @@ fn invalid_path_reports_error() {
 }
 
 #[test]
-fn tb_scores_match_cpp_values() {
+fn tb_scores_match_reference_values() {
     use pyrrhic_rs::WdlProbeResult::*;
     assert_eq!(tablebase::wdl_score(Loss), -TB_MATE_VALUE);
     assert_eq!(tablebase::wdl_score(BlessedLoss), -TB_CURSED_MATE_VALUE);

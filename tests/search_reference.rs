@@ -7,7 +7,7 @@ use gull::types::{move_to_string, uci_score};
 struct Case {
     fen: String,
     depth: u32,
-    best: String,
+    best_move: String,
     kind: String,
     value: i32,
     nodes: u64,
@@ -23,7 +23,7 @@ fn cases() -> Vec<Case> {
             Case {
                 fen: f[0].to_string(),
                 depth: f[1].parse().unwrap(),
-                best: f[2].to_string(),
+                best_move: f[2].to_string(),
                 kind: f[3].to_string(),
                 value: f[4].parse().unwrap(),
                 nodes: f[5].parse().unwrap(),
@@ -33,14 +33,14 @@ fn cases() -> Vec<Case> {
 }
 
 #[test]
-fn search_matches_cpp_reference() {
+fn search_matches_reference() {
     let cases = cases();
     assert!(cases.len() >= 40, "expected a substantial fixture set");
     for c in &cases {
         let mut e = Engine::with_hash_mb(8);
         e.reporter = Box::new(NullReporter);
-        e.init_search(true);
-        e.get_board(&c.fen);
+        e.initialize_search(true);
+        e.set_fen(&c.fen);
         let r = e.go(&SearchLimits {
             depth: c.depth,
             infinite: true,
@@ -49,7 +49,7 @@ fn search_matches_cpp_reference() {
         let (kind, value) = uci_score(r.score);
         assert_eq!(
             move_to_string(r.best_move),
-            c.best,
+            c.best_move,
             "best move at depth {} for {}",
             c.depth,
             c.fen

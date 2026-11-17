@@ -3,7 +3,7 @@
 //! This is deliberately small: it parses the UCI commands needed to drive the
 //! engine and prints the standard `info` / `bestmove` responses.  The search
 //! runs in a worker thread so that `stop` and `quit` remain responsive; the
-//! engine itself uses Lazy SMP when configured with multiple threads.
+//! engine itself uses Lazy SMP when configured with has_multiple_bits threads.
 
 use std::io::{self, BufRead, Write};
 use std::thread::{self, JoinHandle};
@@ -23,17 +23,17 @@ impl Reporter for UciReporter {
         let _ = io::stdout().flush();
     }
 
-    fn pv(&mut self, info: &Info) {
+    fn principal_variation(&mut self, info: &Info) {
         let (kind, value) = uci_score(info.score);
-        let mut pv = String::new();
-        for (i, &mv) in info.pv.iter().enumerate() {
-            if mv == 0 {
+        let mut principal_variation = String::new();
+        for (i, &chess_move) in info.principal_variation.iter().enumerate() {
+            if chess_move == 0 {
                 break;
             }
             if i != 0 {
-                pv.push(' ');
+                principal_variation.push(' ');
             }
-            pv.push_str(&move_to_string(mv));
+            principal_variation.push_str(&move_to_string(chess_move));
         }
         let nps = if info.time_ms == 0 {
             info.nodes.saturating_mul(1000)
@@ -43,14 +43,14 @@ impl Reporter for UciReporter {
         println!(
             "info depth {} seldepth {} score {} {} nodes {} nps {} tbhits {} time {} pv {}",
             info.depth,
-            info.sel_depth,
+            info.selective_depth,
             kind,
             value,
             info.nodes,
             nps,
-            info.tb_hits,
+            info.tablebase_hits,
             info.time_ms,
-            pv
+            principal_variation
         );
         let _ = io::stdout().flush();
     }
@@ -139,7 +139,7 @@ pub fn run() {
                 stop_and_join(&mut running, &mut engine);
                 last_limits = None;
                 if let Some(e) = engine.as_mut() {
-                    e.init_search(true);
+                    e.initialize_search(true);
                 }
             }
             "position" => {
@@ -229,10 +229,12 @@ fn print_bestmove(result: &SearchResult) {
 }
 
 fn parse_option(tokens: &[&str]) -> Option<(String, String)> {
-    let name_pos = tokens.iter().position(|t| t.eq_ignore_ascii_case("name"))?;
+    let name_pos = tokens
+        .iter()
+        .position(|token| token.eq_ignore_ascii_case("name"))?;
     let value_pos = tokens
         .iter()
-        .position(|t| t.eq_ignore_ascii_case("value"))?;
+        .position(|token| token.eq_ignore_ascii_case("value"))?;
     if value_pos <= name_pos + 1 {
         return None;
     }
@@ -248,7 +250,7 @@ fn set_position(engine: &mut Engine, tokens: &[&str]) -> bool {
     let mut i;
     match tokens[0] {
         "startpos" => {
-            engine.get_board(START_FEN);
+            engine.set_fen(START_FEN);
             i = 1;
         }
         "fen" => {
@@ -258,15 +260,15 @@ fn set_position(engine: &mut Engine, tokens: &[&str]) -> bool {
                 fields.push(tokens[i]);
                 i += 1;
             }
-            engine.get_board(&fields.join(" "));
+            engine.set_fen(&fields.join(" "));
         }
         _ => {
             return false;
         }
     }
     if i < tokens.len() && tokens[i] == "moves" {
-        for mv in &tokens[i + 1..] {
-            if !engine.play_uci_move(mv) {
+        for chess_move in &tokens[i + 1..] {
+            if !engine.play_uci_move(chess_move) {
                 // Never continue from a partially applied position: doing so
                 // would desynchronise the engine from the GUI.
                 return false;
@@ -374,28 +376,28 @@ mod tests {
         );
         let direct = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
         let mut d = Box::new(Engine::with_hash_mb(1));
-        d.get_board(direct);
-        assert_eq!(e.pos.cur().key, d.pos.cur().key);
-        assert_eq!(e.pos.cur().pawn_key, d.pos.cur().pawn_key);
-        assert_eq!(e.pos.cur().turn, d.pos.cur().turn);
+        d.set_fen(direct);
+        assert_eq!(e.pos.current().key, d.pos.current().key);
+        assert_eq!(e.pos.current().pawn_key, d.pos.current().pawn_key);
+        assert_eq!(e.pos.current().side_to_move, d.pos.current().side_to_move);
     }
 
     #[test]
     fn plays_promotion_castling_and_en_passant() {
         let mut e = Box::new(Engine::with_hash_mb(1));
-        e.get_board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
+        e.set_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
         assert!(e.play_uci_move("a7a8q"));
-        assert_eq!(e.pos.board.square[56], crate::types::WHITE_QUEEN as u8);
+        assert_eq!(e.pos.board.squares[56], crate::types::WHITE_QUEEN as u8);
 
         let mut e = Box::new(Engine::with_hash_mb(1));
-        e.get_board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        e.set_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         assert!(e.play_uci_move("e1g1"));
-        assert_eq!(e.pos.board.square[6], crate::types::WHITE_KING as u8);
+        assert_eq!(e.pos.board.squares[6], crate::types::WHITE_KING as u8);
 
         let mut e = Box::new(Engine::with_hash_mb(1));
-        e.get_board("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        e.set_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         assert!(e.play_uci_move("e5d6"));
-        assert_eq!(e.pos.board.square[43], crate::types::WHITE_PAWN as u8);
-        assert_eq!(e.pos.board.square[35], 0);
+        assert_eq!(e.pos.board.squares[43], crate::types::WHITE_PAWN as u8);
+        assert_eq!(e.pos.board.squares[35], 0);
     }
 }

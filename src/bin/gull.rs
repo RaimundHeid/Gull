@@ -12,7 +12,7 @@ fn main() {
     } else if args.first().map(String::as_str) == Some("eval") {
         if let Some(fen) = args.get(1) {
             let mut e = Engine::new();
-            e.get_board(fen);
+            e.set_fen(fen);
             e.evaluate();
             println!("{}", e.score());
         }
@@ -24,9 +24,9 @@ fn main() {
 fn bench(depth: u32, fen: &str) {
     let mut e = Engine::with_hash_mb(8);
     e.reporter = Box::new(NullReporter);
-    e.init_search(true);
+    e.initialize_search(true);
     if fen != "startpos" {
-        e.get_board(fen);
+        e.set_fen(fen);
     }
     let start = std::time::Instant::now();
     let r = e.go(&SearchLimits {
@@ -39,7 +39,7 @@ fn bench(depth: u32, fen: &str) {
     println!(
         "info depth {} seldepth {} score {} {} nodes {} nps {} time {}",
         r.depth,
-        r.sel_depth,
+        r.selective_depth,
         kind,
         value,
         r.nodes,
